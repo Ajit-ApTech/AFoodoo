@@ -110,7 +110,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <div>
           {/* Top Brand Bar */}
           <div className="h-16 px-6 flex items-center gap-3 border-b border-slate-800">
-            <span className="text-2xl">🍲</span>
+            <img src="/logo.png" alt="AFoodoo" className="w-8 h-8 rounded-lg object-cover border border-slate-700/60" />
             <div>
               <h1 className="font-extrabold text-slate-100 text-base leading-tight">AFoodoo</h1>
               <p className="text-[10px] font-semibold text-orange-400 uppercase tracking-widest">
