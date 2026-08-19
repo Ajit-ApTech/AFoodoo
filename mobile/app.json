@@ -25,8 +25,18 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "package": "com.anonymous.afoodoo"
+      "package": "com.anonymous.afoodoo",
+      "permissions": ["ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION"]
     },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow AFoodoo to use your location to auto-fill your delivery address.",
+          "locationAlwaysAndWhenInUsePermission": "Allow AFoodoo to use your location for delivery address auto-fill."
+        }
+      ]
+    ],
     "web": {
       "favicon": "./assets/favicon.png"
     },

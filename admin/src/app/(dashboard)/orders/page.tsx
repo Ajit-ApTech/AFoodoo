@@ -1,11 +1,12 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { db } from '../../../lib/firebase';
 import { collection, onSnapshot, doc, updateDoc, addDoc, getDoc } from 'firebase/firestore';
-import { Order, OrderStatus } from '../../../types';
-import { ShoppingBag, Truck, CheckCircle, Clock, MapPin, Key, RotateCcw, History, AlertCircle } from 'lucide-react';
+import { Order, OrderStatus, DeliveryConfig } from '../../../types';
+import { ShoppingBag, Truck, CheckCircle, Clock, MapPin, RotateCcw, History, Navigation, Phone, Route, Send } from 'lucide-react';
 import { sendExpoPushNotification } from '../../../lib/pushService';
+import { nearestNeighborSort, buildRouteUrl, buildMapsLink } from '../../../lib/geo';
 
 export default function OrderQueuePage() {
   const [orders, setOrders] = useState<Order[]>([]);
@@ -13,6 +14,21 @@ export default function OrderQueuePage() {
   const [activeTab, setActiveTab] = useState<'active' | 'history'>('active');
   const [selectedSlotFilter, setSelectedSlotFilter] = useState<'all' | 'lunch' | 'dinner'>('all');
   const [selectedZoneFilter, setSelectedZoneFilter] = useState<'all' | 'zone_1' | 'zone_2' | 'zone_3'>('all');
+  const [deliveryConfig, setDeliveryConfig] = useState<DeliveryConfig | null>(null);
+  const [routeLinks, setRouteLinks] = useState<string[]>([]);
+  const [showRouteModal, setShowRouteModal] = useState(false);
+  const [routeCopied, setRouteCopied] = useState<number | null>(null);
+
+  // Load delivery config from Cloud Firestore (kitchen GPS, radius, rider contact)
+  useEffect(() => {
+    const loadConfig = async () => {
+      try {
+        const snap = await getDoc(doc(db, 'settings', 'delivery_config'));
+        if (snap.exists()) setDeliveryConfig(snap.data() as DeliveryConfig);
+      } catch (e) {}
+    };
+    loadConfig();
+  }, []);
 
   // Real-Time Cloud Firestore listener for orders collection
   useEffect(() => {
@@ -113,6 +129,73 @@ export default function OrderQueuePage() {
     }
   };
 
+  // Generate optimized delivery route using nearest-neighbor sort
+  const handleGenerateRoute = useCallback(() => {
+    if (!deliveryConfig || !deliveryConfig.kitchen_lat || !deliveryConfig.kitchen_lng) {
+      alert('Kitchen location not configured. Please set it in Delivery Settings first.');
+      return;
+    }
+
+    const activeOrders = orders.filter(
+      o => o.status !== 'delivered' && o.status !== 'cancelled' && o.delivery_lat && o.delivery_lng
+    );
+
+    if (activeOrders.length === 0) {
+      alert('No active orders with GPS coordinates found. Make sure customers use the GPS button during checkout.');
+      return;
+    }
+
+    const stops = activeOrders.map(o => ({
+      lat: o.delivery_lat!,
+      lng: o.delivery_lng!,
+      orderId: o.id,
+      name: o.delivery_name || o.user_name || 'Customer',
+      phone: o.delivery_phone || o.user_phone || '',
+      address: o.delivery_address?.line1 || '',
+    }));
+
+    const sorted = nearestNeighborSort(
+      deliveryConfig.kitchen_lat,
+      deliveryConfig.kitchen_lng,
+      stops
+    );
+
+    // Split into chunks of max 9 waypoints (10 stops total per Google Maps URL)
+    const CHUNK_SIZE = 9;
+    const chunks: typeof sorted[] = [];
+    for (let i = 0; i < sorted.length; i += CHUNK_SIZE) {
+      chunks.push(sorted.slice(i, i + CHUNK_SIZE));
+    }
+
+    const links = chunks.map((chunk, idx) => {
+      const originLat = idx === 0 ? deliveryConfig.kitchen_lat : chunks[idx - 1][chunks[idx - 1].length - 1].lat;
+      const originLng = idx === 0 ? deliveryConfig.kitchen_lng : chunks[idx - 1][chunks[idx - 1].length - 1].lng;
+      return buildRouteUrl(originLat, originLng, chunk);
+    });
+
+    setRouteLinks(links);
+    setShowRouteModal(true);
+  }, [orders, deliveryConfig]);
+
+  const handleSendRouteWhatsApp = () => {
+    if (!deliveryConfig?.rider_whatsapp) {
+      alert('Rider WhatsApp number not set. Please add it in Delivery Settings.');
+      return;
+    }
+    const phone = deliveryConfig.rider_whatsapp.replace(/[^0-9]/g, '');
+    const message = routeLinks
+      .map((link, i) => `🛵 Delivery Route Link ${routeLinks.length > 1 ? `(Part ${i + 1}) ` : ''}: ${link}`)
+      .join('%0A%0A');
+    const whatsappUrl = `https://wa.me/${phone}?text=🍲 AFoodoo Delivery Route - ${new Date().toLocaleDateString('en-IN')}:%0A%0A${message}`;
+    window.open(whatsappUrl, '_blank');
+  };
+
+  const handleCopyRoute = async (link: string, idx: number) => {
+    await navigator.clipboard.writeText(link);
+    setRouteCopied(idx);
+    setTimeout(() => setRouteCopied(null), 2000);
+  };
+
   const filteredOrders = orders.filter(order => {
     const isCompleted = order.status === 'delivered' || order.status === 'cancelled';
 
@@ -144,42 +227,51 @@ export default function OrderQueuePage() {
 
   return (
     <div className="space-y-8">
-      {/* Header & Filter Controls */}
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-extrabold text-white tracking-tight flex items-center gap-3">
-            <ShoppingBag className="h-7 w-7 text-orange-400" />
-            <span>Live Order Queue & Historic Dispatch</span>
-          </h1>
-          <p className="text-xs text-slate-400 mt-1">
-            Real-time delivery fulfillment pipeline, rider OTP verification, and historic order logs.
-          </p>
-        </div>
+        {/* Header & Action Buttons */}
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-extrabold text-white tracking-tight flex items-center gap-3">
+              <ShoppingBag className="h-7 w-7 text-orange-400" />
+              <span>Live Order Queue & Historic Dispatch</span>
+            </h1>
+            <p className="text-xs text-slate-400 mt-1">
+              Real-time delivery fulfillment pipeline, rider OTP verification, and historic order logs.
+            </p>
+          </div>
 
-        {/* Filters */}
-        <div className="flex flex-wrap items-center gap-3">
-          <select
-            value={selectedSlotFilter}
-            onChange={e => setSelectedSlotFilter(e.target.value as any)}
-            className="bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2 text-xs font-semibold text-slate-200"
-          >
-            <option value="all">All Meal Slots</option>
-            <option value="lunch">Lunch Tiffins Only</option>
-            <option value="dinner">Dinner Tiffins Only</option>
-          </select>
+          {/* Filters + Route Button */}
+          <div className="flex flex-wrap items-center gap-3">
+            {/* Generate Route Button */}
+            <button
+              onClick={handleGenerateRoute}
+              className="flex items-center gap-2 bg-emerald-700 hover:bg-emerald-600 text-white font-bold px-4 py-2 rounded-xl text-xs transition-all shadow-lg shadow-emerald-500/10"
+            >
+              <Route className="h-4 w-4" />
+              🛵 Generate Today's Route
+            </button>
 
-          <select
-            value={selectedZoneFilter}
-            onChange={e => setSelectedZoneFilter(e.target.value as any)}
-            className="bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2 text-xs font-semibold text-slate-200"
-          >
-            <option value="all">All Delivery Zones</option>
-            <option value="zone_1">Andheri West</option>
-            <option value="zone_2">BKC Tech Park</option>
-            <option value="zone_3">Lower Parel</option>
-          </select>
+            <select
+              value={selectedSlotFilter}
+              onChange={e => setSelectedSlotFilter(e.target.value as any)}
+              className="bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2 text-xs font-semibold text-slate-200"
+            >
+              <option value="all">All Meal Slots</option>
+              <option value="lunch">Lunch Tiffins Only</option>
+              <option value="dinner">Dinner Tiffins Only</option>
+            </select>
+
+            <select
+              value={selectedZoneFilter}
+              onChange={e => setSelectedZoneFilter(e.target.value as any)}
+              className="bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2 text-xs font-semibold text-slate-200"
+            >
+              <option value="all">All Delivery Zones</option>
+              <option value="zone_1">Andheri West</option>
+              <option value="zone_2">BKC Tech Park</option>
+              <option value="zone_3">Lower Parel</option>
+            </select>
+          </div>
         </div>
-      </div>
 
       {/* Tabs: Active Queue vs Order History */}
       <div className="flex items-center gap-4 border-b border-slate-800 pb-1">
@@ -236,19 +328,46 @@ export default function OrderQueuePage() {
 
                 {/* Customer Details */}
                 <div className="space-y-1 text-xs">
-                  <div className="text-slate-200 font-bold">{order.user_name || 'Customer'}</div>
-                  <div className="text-slate-400 font-mono">{order.user_phone || 'N/A'}</div>
+                  <div className="text-slate-200 font-bold">
+                    {order.delivery_name || order.user_name || 'Customer'}
+                  </div>
+                  <a
+                    href={`tel:${order.delivery_phone || order.user_phone}`}
+                    className="text-slate-400 font-mono flex items-center gap-1 hover:text-orange-400 transition-colors"
+                  >
+                    <Phone className="h-3 w-3" />
+                    {order.delivery_phone || order.user_phone || 'N/A'}
+                  </a>
                 </div>
 
                 {/* Delivery Address Box */}
                 <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 text-xs space-y-1">
-                  <div className="flex items-center gap-1.5 text-slate-400 font-semibold">
-                    <MapPin className="h-3.5 w-3.5 text-orange-400 shrink-0" />
-                    <span>{order.delivery_address?.label || 'Address'}</span>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-1.5 text-slate-400 font-semibold">
+                      <MapPin className="h-3.5 w-3.5 text-orange-400 shrink-0" />
+                      <span>{order.delivery_address?.label || 'Address'}</span>
+                    </div>
+                    {(order.maps_link || order.delivery_lat) && (
+                      <a
+                        href={order.maps_link || buildMapsLink(order.delivery_lat!, order.delivery_lng!)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-1 text-[10px] font-bold text-blue-400 hover:text-blue-300 transition-colors shrink-0"
+                      >
+                        <Navigation className="h-3 w-3" />
+                        Open in Maps
+                      </a>
+                    )}
                   </div>
                   <p className="text-slate-200 text-[11px] leading-snug">
                     {order.delivery_address?.line1 || 'Customer Address'}
                   </p>
+                  {order.delivery_address?.landmark && (
+                    <p className="text-slate-400 text-[10px]">📍 Near: {order.delivery_address.landmark}</p>
+                  )}
+                  {order.delivery_distance_km != null && (
+                    <p className="text-slate-500 text-[10px]">{order.delivery_distance_km} km from kitchen</p>
+                  )}
                 </div>
 
                 {/* Slot & OTP Box */}
@@ -315,6 +434,70 @@ export default function OrderQueuePage() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Route Optimization Modal */}
+      {showRouteModal && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl p-6 max-w-lg w-full space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-extrabold text-white flex items-center gap-2">
+                <Route className="h-5 w-5 text-emerald-400" />
+                🛵 Today's Optimized Delivery Route
+              </h2>
+              <button
+                onClick={() => setShowRouteModal(false)}
+                className="text-slate-400 hover:text-white text-sm font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-400">
+              Stops are sorted by nearest-neighbor from kitchen. Google Maps URL with turn-by-turn navigation.
+            </p>
+
+            <div className="space-y-3">
+              {routeLinks.map((link, idx) => (
+                <div key={idx} className="bg-slate-950 border border-slate-700 rounded-xl p-3 space-y-2">
+                  {routeLinks.length > 1 && (
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">
+                      Route Part {idx + 1}
+                    </p>
+                  )}
+                  <p className="text-[10px] text-slate-500 font-mono break-all leading-relaxed">
+                    {link.slice(0, 80)}...
+                  </p>
+                  <div className="flex gap-2">
+                    <a
+                      href={link}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-1.5 text-xs font-bold text-blue-400 hover:text-blue-300 border border-blue-500/30 rounded-lg px-3 py-1.5 transition-colors"
+                    >
+                      <Navigation className="h-3.5 w-3.5" />
+                      Open in Maps
+                    </a>
+                    <button
+                      onClick={() => handleCopyRoute(link, idx)}
+                      className="text-xs font-bold text-slate-300 hover:text-white border border-slate-700 rounded-lg px-3 py-1.5 transition-colors"
+                    >
+                      {routeCopied === idx ? '✓ Copied!' : 'Copy Link'}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <button
+              onClick={handleSendRouteWhatsApp}
+              className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold py-3 rounded-xl text-sm transition-all shadow-lg shadow-emerald-500/20"
+            >
+              <Send className="h-4 w-4" />
+              📤 Send Route to Rider via WhatsApp
+            </button>
+          </div>
         </div>
       )}
     </div>

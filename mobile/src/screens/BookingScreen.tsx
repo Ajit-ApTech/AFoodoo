@@ -14,6 +14,7 @@ import {
 import { useAppStore } from '../store/appStore';
 import { placeOrder } from '../api/orders';
 import { useTheme } from '../theme/ThemeContext';
+import { haversineDistance, buildMapsLink } from '../utils/geo';
 
 export default function BookingScreen({ route, navigation }: any) {
   const { theme } = useTheme();
@@ -25,19 +26,65 @@ export default function BookingScreen({ route, navigation }: any) {
   };
 
   const user = useAppStore(state => state.user);
+  const setUser = useAppStore(state => state.setUser);
   const activeSlot = useAppStore(state => state.activeSlot);
   const deductWalletBalance = useAppStore(state => state.deductWalletBalance);
 
-  const initialAddress = user?.addresses && user.addresses.length > 0
-    ? user.addresses[0].line1
-    : 'Flat 402, Green Park Residency, Sector 15';
+  // Delivery form state — pre-filled from user's last saved address
+  const savedAddr = user?.addresses && user.addresses.length > 0 ? user.addresses[0] : null;
+  const [receiverName, setReceiverName] = useState(savedAddr?.receiver_name || user?.name || '');
+  const [receiverPhone, setReceiverPhone] = useState(savedAddr?.receiver_phone || user?.phone || '');
+  const [addressLine1, setAddressLine1] = useState(savedAddr?.line1 || '');
+  const [landmark, setLandmark] = useState(savedAddr?.landmark || '');
+  const [city, setCity] = useState(savedAddr?.city || '');
+  const [pincode, setPincode] = useState(savedAddr?.zip || '');
+  const [detectedLat, setDetectedLat] = useState<number | null>(savedAddr?.latitude ?? null);
+  const [detectedLng, setDetectedLng] = useState<number | null>(savedAddr?.longitude ?? null);
+  const [locating, setLocating] = useState(false);
 
-  const [address, setAddress] = useState(initialAddress);
   const [paymentMethod, setPaymentMethod] = useState<'wallet' | 'card'>('wallet');
   const [submitting, setSubmitting] = useState(false);
 
   const walletBalance = user?.wallet_balance ?? 500;
   const isWalletSufficient = walletBalance >= item.price;
+
+  const handleDetectLocation = async () => {
+    setLocating(true);
+    try {
+      const Location = require('expo-location');
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert(
+          'Location Permission Denied',
+          'Please allow location access in Settings to auto-fill your delivery address.'
+        );
+        setLocating(false);
+        return;
+      }
+
+      const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      const lat = position.coords.latitude;
+      const lng = position.coords.longitude;
+      setDetectedLat(lat);
+      setDetectedLng(lng);
+
+      // Auto-fill address via native OS reverse geocoding (free)
+      try {
+        const geocoded = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
+        if (geocoded && geocoded.length > 0) {
+          const g = geocoded[0];
+          if (!addressLine1) setAddressLine1([g.streetNumber, g.street].filter(Boolean).join(' '));
+          if (!city) setCity(g.city || g.subregion || '');
+          if (!pincode) setPincode(g.postalCode || '');
+        }
+      } catch (geocodeErr) {}
+
+      Alert.alert('📍 Location Detected', 'Your current GPS location has been captured. Please verify and complete the address fields.');
+    } catch (e: any) {
+      Alert.alert('Location Error', `Could not detect location: ${e.message}`);
+    }
+    setLocating(false);
+  };
 
   const handleConfirmOrder = async () => {
     if (item.is_available === false) {
@@ -45,8 +92,20 @@ export default function BookingScreen({ route, navigation }: any) {
       return;
     }
 
-    if (!address.trim()) {
-      Alert.alert('Address Required', 'Please provide a valid delivery address');
+    if (!receiverName.trim()) {
+      Alert.alert('Recipient Name Required', 'Please enter the name of the person receiving the delivery.');
+      return;
+    }
+    if (!receiverPhone.trim()) {
+      Alert.alert('Contact Number Required', 'Please enter a contact number for the delivery recipient.');
+      return;
+    }
+    if (!addressLine1.trim()) {
+      Alert.alert('Address Required', 'Please provide a flat/house number and street address for delivery.');
+      return;
+    }
+    if (!city.trim()) {
+      Alert.alert('City Required', 'Please enter your city.');
       return;
     }
 
@@ -55,12 +114,70 @@ export default function BookingScreen({ route, navigation }: any) {
       return;
     }
 
+    // Delivery range check — read kitchen GPS strictly from Cloud Firestore settings/delivery_config
+    if (detectedLat && detectedLng) {
+      try {
+        const { doc, getDoc } = require('firebase/firestore');
+        const { firestore } = require('../firebaseConfig');
+        const configSnap = await getDoc(doc(firestore, 'settings', 'delivery_config'));
+        if (configSnap.exists()) {
+          const config = configSnap.data();
+          const kitchenLat = config.kitchen_lat;
+          const kitchenLng = config.kitchen_lng;
+          const maxRadius = config.max_delivery_radius_km || 25;
+
+          if (kitchenLat && kitchenLng) {
+            const distanceKm = haversineDistance(detectedLat, detectedLng, kitchenLat, kitchenLng);
+            if (distanceKm > maxRadius) {
+              Alert.alert(
+                'Outside Delivery Area 📍',
+                `Sorry, we currently deliver only within ${maxRadius} km of our kitchen. Your location is ${distanceKm} km away. We're working on expanding our delivery area!`
+              );
+              return;
+            }
+          }
+        }
+      } catch (rangeErr) {
+        // If settings not configured, skip range check gracefully
+      }
+    }
+
     setSubmitting(true);
     const slotId = activeSlot?.id || 'slot_lunch_today';
     const userId = user?.id || 'demo-user-123';
     const otpCode = Math.floor(1000 + Math.random() * 9000).toString();
 
-    const orderData = {
+    // Calculate distance from kitchen for admin display
+    let deliveryDistanceKm: number | undefined;
+    let mapsLink: string | undefined;
+    if (detectedLat && detectedLng) {
+      mapsLink = buildMapsLink(detectedLat, detectedLng);
+      try {
+        const { doc, getDoc } = require('firebase/firestore');
+        const { firestore } = require('../firebaseConfig');
+        const configSnap = await getDoc(doc(firestore, 'settings', 'delivery_config'));
+        if (configSnap.exists()) {
+          const config = configSnap.data();
+          if (config.kitchen_lat && config.kitchen_lng) {
+            deliveryDistanceKm = haversineDistance(detectedLat, detectedLng, config.kitchen_lat, config.kitchen_lng);
+          }
+        }
+      } catch (e) {}
+    }
+
+    const deliveryAddress = {
+      label: 'Home',
+      receiver_name: receiverName.trim(),
+      receiver_phone: receiverPhone.trim(),
+      line1: addressLine1.trim(),
+      landmark: landmark.trim(),
+      city: city.trim(),
+      zip: pincode.trim(),
+      latitude: detectedLat ?? undefined,
+      longitude: detectedLng ?? undefined,
+    };
+
+    const orderData: any = {
       user_id: userId,
       user_name: user?.name || 'AFoodoo Customer',
       user_phone: user?.phone || '+91 98765 43210',
@@ -76,12 +193,9 @@ export default function BookingScreen({ route, navigation }: any) {
       delivery_start: activeSlot?.delivery_start_time || (activeSlot?.name?.toLowerCase().includes('dinner') ? '7:30 PM' : '1:00 PM'),
       delivery_end: activeSlot?.delivery_end_time || (activeSlot?.name?.toLowerCase().includes('dinner') ? '8:30 PM' : '2:00 PM'),
       status: 'booked',
-      delivery_address: {
-        label: 'Home',
-        line1: address,
-        city: 'Mumbai',
-        zip: '400001',
-      },
+      delivery_address: deliveryAddress,
+      delivery_name: receiverName.trim(),
+      delivery_phone: receiverPhone.trim(),
       payment_status: 'paid',
       otp_code: otpCode,
       delivery_zone_id: 'zone_1',
@@ -91,48 +205,68 @@ export default function BookingScreen({ route, navigation }: any) {
       created_at: new Date().toISOString(),
     };
 
+    // Only add GPS fields if available
+    if (detectedLat != null) orderData.delivery_lat = detectedLat;
+    if (detectedLng != null) orderData.delivery_lng = detectedLng;
+    if (mapsLink) orderData.maps_link = mapsLink;
+    if (deliveryDistanceKm != null) orderData.delivery_distance_km = deliveryDistanceKm;
+
     try {
-      // 1. Write order directly to Cloud Firestore
-      const { collection, addDoc } = require('firebase/firestore');
+      // 1. Write order to Cloud Firestore
+      const { collection, addDoc, doc, updateDoc, increment, setDoc, arrayUnion } = require('firebase/firestore');
       const { firestore } = require('../firebaseConfig');
       const docRef = await addDoc(collection(firestore, 'orders'), orderData);
       const realOrderId = docRef.id;
 
-      // 2. Increment quantity_booked on Cloud Firestore menu_items document
+      // 2. Save address to user's saved addresses for future use
+      const userDocId = user?.id || `usr_${(user?.phone || '').replace(/\D/g, '')}`;
+      const savedAddress = {
+        ...deliveryAddress,
+        id: `addr_${Date.now()}`,
+        state: '',
+        latitude: detectedLat ?? undefined,
+        longitude: detectedLng ?? undefined,
+        maps_link: mapsLink || undefined,
+      };
       try {
-        const { doc, updateDoc, increment } = require('firebase/firestore');
+        await updateDoc(doc(firestore, 'users', userDocId), {
+          addresses: arrayUnion(savedAddress),
+        });
+        // Also update local Zustand store
+        if (user) {
+          const updatedAddresses = [...(user.addresses || [])];
+          const exists = updatedAddresses.some(a => a.line1 === savedAddress.line1 && a.zip === savedAddress.zip);
+          if (!exists) {
+            setUser({ ...user, addresses: [savedAddress, ...updatedAddresses] });
+          }
+        }
+      } catch (addrErr) {}
+
+      // 3. Increment quantity_booked on menu item
+      try {
         await updateDoc(doc(firestore, 'menu_items', item.id), {
           quantity_booked: increment(1),
         });
-      } catch (incErr) {
-        console.log('Notice incrementing quantity_booked on menu item:', incErr);
-      }
+      } catch (incErr) {}
 
-      // 3. Update local store menuItems state
+      // 4. Update local store menuItems
       const store = useAppStore.getState();
       const updatedMenuItems = store.menuItems.map(m =>
         m.id === item.id ? { ...m, quantity_booked: (m.quantity_booked || 0) + 1 } : m
       );
       store.setMenuItems(updatedMenuItems);
 
-      // 4. Also attempt Express API backend POST
+      // 5. Also attempt Express API backend POST
       try {
-        await placeOrder({
-          userId,
-          menuItemId: item.id,
-          slotId,
-          address: { label: 'Home', line1: address },
-        });
-      } catch (apiErr) {
-        console.log('Backend API notice, order saved to Firestore:', realOrderId);
-      }
+        await placeOrder({ userId, menuItemId: item.id, slotId, address: { label: 'Home', line1: addressLine1 } });
+      } catch (apiErr) {}
 
-      // 5. Deduct wallet balance
+      // 6. Deduct wallet balance
       if (paymentMethod === 'wallet') {
         deductWalletBalance(item.price, `${item.title} — Meal Booking 🍲`);
       }
 
-      // 6. Update Zustand store orders
+      // 7. Update Zustand store orders
       const currentOrders = useAppStore.getState().orders;
       useAppStore.getState().setOrders([{ id: realOrderId, ...orderData }, ...currentOrders]);
 
@@ -146,34 +280,27 @@ export default function BookingScreen({ route, navigation }: any) {
     } catch (e: any) {
       console.log('Firestore order write fallback:', e.message);
 
-      // Increment quantity_booked fallback
       try {
         const { doc, updateDoc, increment } = require('firebase/firestore');
         const { firestore } = require('../firebaseConfig');
-        await updateDoc(doc(firestore, 'menu_items', item.id), {
-          quantity_booked: increment(1),
-        });
+        await updateDoc(doc(firestore, 'menu_items', item.id), { quantity_booked: increment(1) });
       } catch (e) {}
 
       const store = useAppStore.getState();
-      const updatedMenuItems = store.menuItems.map(m =>
+      store.setMenuItems(store.menuItems.map(m =>
         m.id === item.id ? { ...m, quantity_booked: (m.quantity_booked || 0) + 1 } : m
-      );
-      store.setMenuItems(updatedMenuItems);
+      ));
 
-      if (paymentMethod === 'wallet') {
-        deductWalletBalance(item.price, `${item.title} — Meal Booking 🍲`);
-      }
+      if (paymentMethod === 'wallet') deductWalletBalance(item.price, `${item.title} — Meal Booking 🍲`);
       setSubmitting(false);
       const demoOrderId = `ord_${Math.floor(100000 + Math.random() * 900000)}`;
       Alert.alert('Order Booked! 🍲', 'Your tiffin order is confirmed and sent to kitchen.', [
-        {
-          text: 'Track Status',
-          onPress: () => navigation.replace('OrderTracking', { orderId: demoOrderId }),
-        },
+        { text: 'Track Status', onPress: () => navigation.replace('OrderTracking', { orderId: demoOrderId }) },
       ]);
     }
   };
+
+  const inputStyle = [styles.input, { backgroundColor: theme.inputBg, borderColor: theme.inputBorder, color: theme.inputText }];
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
@@ -197,24 +324,91 @@ export default function BookingScreen({ route, navigation }: any) {
           </View>
         </View>
 
-        {/* Delivery Address Card */}
+        {/* Delivery Details Card */}
         <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}>
-          <Text style={[styles.cardHeader, { color: theme.textPrimary }]}>Delivery Address 📍</Text>
+          <Text style={[styles.cardHeader, { color: theme.textPrimary }]}>Delivery Details 📍</Text>
+
+          {/* GPS Button */}
+          <TouchableOpacity
+            style={[styles.gpsButton, { backgroundColor: '#1565C0' }]}
+            onPress={handleDetectLocation}
+            disabled={locating}
+          >
+            {locating ? (
+              <ActivityIndicator color="#FFF" size="small" />
+            ) : (
+              <Text style={styles.gpsButtonText}>📍 Use My Current Location (Auto-Fill)</Text>
+            )}
+          </TouchableOpacity>
+
+          {detectedLat != null && (
+            <Text style={[styles.gpsHint, { color: theme.textMuted }]}>
+              ✓ GPS captured: {detectedLat.toFixed(4)}, {detectedLng?.toFixed(4)}
+            </Text>
+          )}
+
+          <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Recipient Name *</Text>
           <TextInput
-            style={[
-              styles.addressInput,
-              {
-                backgroundColor: theme.inputBg,
-                borderColor: theme.inputBorder,
-                color: theme.inputText,
-              },
-            ]}
-            value={address}
-            onChangeText={setAddress}
-            placeholder="House/Flat No., Building, Street Name"
+            style={inputStyle}
+            value={receiverName}
+            onChangeText={setReceiverName}
+            placeholder="Full name of person receiving delivery"
+            placeholderTextColor={theme.textMuted}
+          />
+
+          <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Contact Number *</Text>
+          <TextInput
+            style={inputStyle}
+            value={receiverPhone}
+            onChangeText={setReceiverPhone}
+            placeholder="+91 98765 43210"
+            placeholderTextColor={theme.textMuted}
+            keyboardType="phone-pad"
+          />
+
+          <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Flat / House No., Building, Street *</Text>
+          <TextInput
+            style={inputStyle}
+            value={addressLine1}
+            onChangeText={setAddressLine1}
+            placeholder="e.g. Flat 402, Green Park Residency, MG Road"
             placeholderTextColor={theme.textMuted}
             multiline
           />
+
+          <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Landmark (Optional)</Text>
+          <TextInput
+            style={inputStyle}
+            value={landmark}
+            onChangeText={setLandmark}
+            placeholder="e.g. Near D-Mart, Opposite HDFC Bank"
+            placeholderTextColor={theme.textMuted}
+          />
+
+          <View style={styles.rowFields}>
+            <View style={{ flex: 1, marginRight: 8 }}>
+              <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>City *</Text>
+              <TextInput
+                style={inputStyle}
+                value={city}
+                onChangeText={setCity}
+                placeholder="Mumbai"
+                placeholderTextColor={theme.textMuted}
+              />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>PIN Code</Text>
+              <TextInput
+                style={inputStyle}
+                value={pincode}
+                onChangeText={setPincode}
+                placeholder="400001"
+                placeholderTextColor={theme.textMuted}
+                keyboardType="numeric"
+                maxLength={6}
+              />
+            </View>
+          </View>
         </View>
 
         {/* Payment Method Card */}
@@ -278,7 +472,7 @@ export default function BookingScreen({ route, navigation }: any) {
           </TouchableOpacity>
         </View>
 
-        {/* Bill Summary Card */}
+        {/* Bill Summary */}
         <View style={[styles.billCard, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}>
           <View style={styles.billRow}>
             <Text style={[styles.billLabel, { color: theme.textSecondary }]}>Item Subtotal</Text>
@@ -330,13 +524,27 @@ const styles = StyleSheet.create({
   itemTitle: { fontSize: 16, fontWeight: '700' },
   itemPrice: { fontSize: 16, fontWeight: '800', marginVertical: 2 },
   itemDelivery: { fontSize: 12 },
-  addressInput: {
+  gpsButton: {
+    borderRadius: 10,
+    paddingVertical: 11,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    marginBottom: 8,
+    minHeight: 44,
+    justifyContent: 'center',
+  },
+  gpsButtonText: { color: '#FFF', fontWeight: '700', fontSize: 14 },
+  gpsHint: { fontSize: 11, marginBottom: 10, textAlign: 'center' },
+  fieldLabel: { fontSize: 12, fontWeight: '600', marginBottom: 4, marginTop: 10 },
+  input: {
     borderWidth: 1,
     borderRadius: 10,
-    padding: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     fontSize: 14,
-    minHeight: 60,
+    minHeight: 44,
   },
+  rowFields: { flexDirection: 'row', marginTop: 0 },
   paymentOption: {
     borderWidth: 1.5,
     borderRadius: 12,

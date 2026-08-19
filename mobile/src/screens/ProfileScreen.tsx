@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -8,9 +8,13 @@ import {
   ScrollView,
   Switch,
   Alert,
+  Modal,
+  TextInput,
+  ActivityIndicator,
 } from 'react-native';
 import { useAppStore } from '../store/appStore';
 import { useTheme, ThemeMode } from '../theme/ThemeContext';
+import { DeliveryAddress } from '../types';
 
 export default function ProfileScreen({ navigation }: any) {
   const user = useAppStore(state => state.user);
@@ -19,11 +23,54 @@ export default function ProfileScreen({ navigation }: any) {
   const setNotificationSettings = useAppStore(state => state.setNotificationSettings);
   const { theme, themeMode, setThemeMode } = useTheme();
 
+  // Add Address Modal state
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [label, setLabel] = useState<'Home' | 'Work' | 'Other'>('Home');
+  const [receiverName, setReceiverName] = useState(user?.name || '');
+  const [receiverPhone, setReceiverPhone] = useState(user?.phone || '');
+  const [line1, setLine1] = useState('');
+  const [landmark, setLandmark] = useState('');
+  const [city, setCity] = useState('');
+  const [zip, setZip] = useState('');
+  const [detectedLat, setDetectedLat] = useState<number | null>(null);
+  const [detectedLng, setDetectedLng] = useState<number | null>(null);
+  const [locating, setLocating] = useState(false);
+  const [savingAddress, setSavingAddress] = useState(false);
+
+  // Real-Time Cloud Firestore listener on User Document
+  useEffect(() => {
+    if (!user?.phone) return;
+    const cleanPhone = user.phone.trim();
+    const userDocId = user.id || `usr_${cleanPhone.replace(/\D/g, '')}`;
+
+    try {
+      const { doc, onSnapshot } = require('firebase/firestore');
+      const { firestore } = require('../firebaseConfig');
+
+      const unsub = onSnapshot(doc(firestore, 'users', userDocId), (docSnap: any) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          if (data.addresses && Array.isArray(data.addresses)) {
+            setUser({
+              ...user,
+              addresses: data.addresses,
+              wallet_balance: data.wallet_balance ?? user.wallet_balance,
+              name: data.name || user.name,
+              phone: data.phone || user.phone,
+            });
+          }
+        }
+      });
+      return unsub;
+    } catch (e) {
+      console.log('User document listener notice');
+    }
+  }, [user?.phone]);
+
   const handleToggleSetting = (key: string, value: boolean) => {
     const updated = { ...notificationSettings, [key]: value };
     setNotificationSettings({ [key]: value });
 
-    // Sync notification_settings to Cloud Firestore user document
     if (user?.phone) {
       const cleanPhone = user.phone.trim();
       const userDocId = user.id || `usr_${cleanPhone.replace(/\D/g, '')}`;
@@ -51,15 +98,131 @@ export default function ProfileScreen({ navigation }: any) {
     ]);
   };
 
-  const addresses = user?.addresses || [
-    {
-      label: 'Home',
-      line1: 'Flat 402, Green Park Residency, Sector 15',
-      city: 'Mumbai',
-      state: 'Maharashtra',
-      zip: '400001',
-    },
-  ];
+  const handleDetectLocation = async () => {
+    setLocating(true);
+    try {
+      const Location = require('expo-location');
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Denied', 'Please allow location permission in your device settings.');
+        setLocating(false);
+        return;
+      }
+      const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      const lat = position.coords.latitude;
+      const lng = position.coords.longitude;
+      setDetectedLat(lat);
+      setDetectedLng(lng);
+
+      try {
+        const geocoded = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
+        if (geocoded && geocoded.length > 0) {
+          const g = geocoded[0];
+          if (!line1) setLine1([g.streetNumber, g.street].filter(Boolean).join(' '));
+          if (!city) setCity(g.city || g.subregion || '');
+          if (!zip) setZip(g.postalCode || '');
+        }
+      } catch (e) {}
+
+      Alert.alert('📍 Location Captured', 'Your GPS location was captured and address fields auto-filled!');
+    } catch (e: any) {
+      Alert.alert('GPS Error', e.message);
+    }
+    setLocating(false);
+  };
+
+  const handleSaveAddress = async () => {
+    if (!receiverName.trim()) {
+      Alert.alert('Required', 'Please enter recipient name.');
+      return;
+    }
+    if (!receiverPhone.trim()) {
+      Alert.alert('Required', 'Please enter contact number.');
+      return;
+    }
+    if (!line1.trim()) {
+      Alert.alert('Required', 'Please enter street address.');
+      return;
+    }
+    if (!city.trim()) {
+      Alert.alert('Required', 'Please enter city.');
+      return;
+    }
+
+    setSavingAddress(true);
+
+    const newAddress: DeliveryAddress = {
+      id: `addr_${Date.now()}`,
+      label,
+      receiver_name: receiverName.trim(),
+      receiver_phone: receiverPhone.trim(),
+      line1: line1.trim(),
+      landmark: landmark.trim(),
+      city: city.trim(),
+      state: '',
+      zip: zip.trim(),
+      latitude: detectedLat ?? undefined,
+      longitude: detectedLng ?? undefined,
+    };
+
+    const currentAddresses = user?.addresses || [];
+    const updatedAddresses = [newAddress, ...currentAddresses];
+
+    // Write to Cloud Firestore
+    const userDocId = user?.id || `usr_${(user?.phone || '').replace(/\D/g, '')}`;
+    try {
+      const { doc, updateDoc, setDoc } = require('firebase/firestore');
+      const { firestore } = require('../firebaseConfig');
+      await setDoc(
+        doc(firestore, 'users', userDocId),
+        { addresses: updatedAddresses },
+        { merge: true }
+      );
+    } catch (e) {}
+
+    // Update local Zustand state
+    if (user) {
+      setUser({ ...user, addresses: updatedAddresses });
+    }
+
+    setSavingAddress(false);
+    setShowAddModal(false);
+    setLine1('');
+    setLandmark('');
+    setCity('');
+    setZip('');
+    setDetectedLat(null);
+    setDetectedLng(null);
+    Alert.alert('Address Saved 🎉', 'New delivery address has been saved to your account.');
+  };
+
+  const handleDeleteAddress = (index: number) => {
+    Alert.alert('Delete Address', 'Are you sure you want to remove this saved address?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          const currentAddresses = user?.addresses || [];
+          const updated = currentAddresses.filter((_, idx) => idx !== index);
+          const userDocId = user?.id || `usr_${(user?.phone || '').replace(/\D/g, '')}`;
+          try {
+            const { doc, setDoc } = require('firebase/firestore');
+            const { firestore } = require('../firebaseConfig');
+            await setDoc(doc(firestore, 'users', userDocId), { addresses: updated }, { merge: true });
+          } catch (e) {}
+
+          if (user) {
+            setUser({ ...user, addresses: updated });
+          }
+        },
+      },
+    ]);
+  };
+
+  const savedAddresses = user?.addresses || [];
+
+  const inputStyle = [styles.modalInput, { backgroundColor: theme.inputBg, borderColor: theme.inputBorder, color: theme.inputText }];
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
@@ -67,12 +230,7 @@ export default function ProfileScreen({ navigation }: any) {
         <Text style={[styles.pageTitle, { color: theme.textPrimary }]}>Account Settings</Text>
 
         {/* User Card */}
-        <View
-          style={[
-            styles.userCard,
-            { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
-          ]}
-        >
+        <View style={[styles.userCard, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}>
           <View style={[styles.avatarBadge, { backgroundColor: theme.primary }]}>
             <Text style={styles.avatarText}>
               {user?.name ? user.name.charAt(0).toUpperCase() : 'U'}
@@ -80,10 +238,10 @@ export default function ProfileScreen({ navigation }: any) {
           </View>
           <View style={styles.userInfo}>
             <Text style={[styles.userName, { color: theme.textPrimary }]}>
-              {user?.name || 'AFoodoo Diner'}
+              {user?.name || 'AFoodoo Customer'}
             </Text>
             <Text style={[styles.userPhone, { color: theme.textSecondary }]}>
-              {user?.phone || '+91 98765 43210'}
+              {user?.phone || 'No phone registered'}
             </Text>
             <Text style={[styles.userJoined, { color: theme.textMuted }]}>
               Member since August 2026
@@ -91,14 +249,9 @@ export default function ProfileScreen({ navigation }: any) {
           </View>
         </View>
 
-        {/* Theme Settings (Dark Mode Support) */}
+        {/* Theme Settings */}
         <Text style={[styles.sectionTitle, { color: theme.textPrimary }]}>App Appearance 🎨</Text>
-        <View
-          style={[
-            styles.card,
-            { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
-          ]}
-        >
+        <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}>
           <Text style={[styles.themeLabel, { color: theme.textSecondary }]}>Theme Preference</Text>
           <View style={styles.themeRow}>
             {(['system', 'light', 'dark'] as ThemeMode[]).map(mode => {
@@ -120,12 +273,7 @@ export default function ProfileScreen({ navigation }: any) {
                   ]}
                   onPress={() => setThemeMode(mode)}
                 >
-                  <Text
-                    style={[
-                      styles.themeChipText,
-                      { color: isSelected ? '#FFF' : theme.textPrimary },
-                    ]}
-                  >
+                  <Text style={[styles.themeChipText, { color: isSelected ? '#FFF' : theme.textPrimary }]}>
                     {labels[mode]}
                   </Text>
                 </TouchableOpacity>
@@ -134,27 +282,51 @@ export default function ProfileScreen({ navigation }: any) {
           </View>
         </View>
 
-        {/* Saved Addresses */}
+        {/* Saved Delivery Addresses */}
         <Text style={[styles.sectionTitle, { color: theme.textPrimary }]}>
           Saved Delivery Addresses 📍
         </Text>
-        <View
-          style={[
-            styles.card,
-            { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
-          ]}
-        >
-          {addresses.map((addr, i) => (
-            <View key={i} style={styles.addressRow}>
-              <Text style={[styles.addrLabel, { color: theme.accent }]}>{addr.label}</Text>
-              <Text style={[styles.addrLine, { color: theme.textPrimary }]}>
-                {addr.line1}, {addr.city}
+        <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}>
+          {savedAddresses.length === 0 ? (
+            <View style={styles.emptyAddressContainer}>
+              <Text style={[styles.emptyAddressText, { color: theme.textMuted }]}>
+                No saved delivery addresses yet. Add one below or save during checkout.
               </Text>
             </View>
-          ))}
+          ) : (
+            savedAddresses.map((addr, i) => (
+              <View key={addr.id || i} style={[styles.addressCard, { borderColor: theme.surfaceBorder }]}>
+                <View style={styles.addressHeaderRow}>
+                  <View style={[styles.labelBadge, { backgroundColor: theme.primaryLight }]}>
+                    <Text style={[styles.labelBadgeText, { color: theme.primary }]}>{addr.label || 'Home'}</Text>
+                  </View>
+                  <TouchableOpacity onPress={() => handleDeleteAddress(i)} style={styles.deleteButton}>
+                    <Text style={styles.deleteButtonText}>🗑️ Delete</Text>
+                  </TouchableOpacity>
+                </View>
+                <Text style={[styles.addrName, { color: theme.textPrimary }]}>
+                  👤 {addr.receiver_name || user?.name || 'Customer'} ({addr.receiver_phone || user?.phone || 'N/A'})
+                </Text>
+                <Text style={[styles.addrLine, { color: theme.textSecondary }]}>
+                  {addr.line1}, {addr.city} {addr.zip ? `- ${addr.zip}` : ''}
+                </Text>
+                {addr.landmark ? (
+                  <Text style={[styles.addrLandmark, { color: theme.textMuted }]}>📍 Landmark: {addr.landmark}</Text>
+                ) : null}
+                {addr.latitude != null ? (
+                  <Text style={[styles.addrGps, { color: theme.statusSuccessText }]}>✓ GPS Pin Saved</Text>
+                ) : null}
+              </View>
+            ))
+          )}
+
           <TouchableOpacity
             style={[styles.addAddrButton, { borderTopColor: theme.surfaceBorder }]}
-            onPress={() => Alert.alert('Add Address', 'Map pin drop modal to select GPS location.')}
+            onPress={() => {
+              setReceiverName(user?.name || '');
+              setReceiverPhone(user?.phone || '');
+              setShowAddModal(true);
+            }}
           >
             <Text style={[styles.addAddrText, { color: theme.primary }]}>
               + Add New Delivery Address
@@ -166,12 +338,7 @@ export default function ProfileScreen({ navigation }: any) {
         <Text style={[styles.sectionTitle, { color: theme.textPrimary }]}>
           Notification Preferences 🔔
         </Text>
-        <View
-          style={[
-            styles.card,
-            { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
-          ]}
-        >
+        <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}>
           <View style={styles.switchRow}>
             <Text style={[styles.switchText, { color: theme.textPrimary }]}>
               15-min Cutoff Warning Alerts
@@ -183,9 +350,7 @@ export default function ProfileScreen({ navigation }: any) {
               thumbColor={notificationSettings.cutoff_alerts ? theme.primary : theme.inputBg}
             />
           </View>
-
           <View style={[styles.divider, { backgroundColor: theme.surfaceBorder }]} />
-
           <View style={styles.switchRow}>
             <Text style={[styles.switchText, { color: theme.textPrimary }]}>
               Live Order Tracking Push Notifications
@@ -197,9 +362,7 @@ export default function ProfileScreen({ navigation }: any) {
               thumbColor={notificationSettings.order_updates ? theme.primary : theme.inputBg}
             />
           </View>
-
           <View style={[styles.divider, { backgroundColor: theme.surfaceBorder }]} />
-
           <View style={styles.switchRow}>
             <Text style={[styles.switchText, { color: theme.textPrimary }]}>
               Daily Menu & Special Offers
@@ -211,9 +374,7 @@ export default function ProfileScreen({ navigation }: any) {
               thumbColor={notificationSettings.promo_alerts ? theme.primary : theme.inputBg}
             />
           </View>
-
           <View style={[styles.divider, { backgroundColor: theme.surfaceBorder }]} />
-
           <View style={styles.switchRow}>
             <Text style={[styles.switchText, { color: theme.textPrimary }]}>
               In-App Screen Popup Alerts
@@ -227,12 +388,9 @@ export default function ProfileScreen({ navigation }: any) {
           </View>
         </View>
 
-        {/* Sign Out Button - Accessible Touch Target >=44dp */}
+        {/* Sign Out Button */}
         <TouchableOpacity
-          style={[
-            styles.logoutButton,
-            { backgroundColor: theme.statusErrorBg, borderColor: theme.statusErrorText },
-          ]}
+          style={[styles.logoutButton, { backgroundColor: theme.statusErrorBg, borderColor: theme.statusErrorText }]}
           onPress={handleLogout}
         >
           <Text style={[styles.logoutText, { color: theme.statusErrorText }]}>
@@ -240,6 +398,138 @@ export default function ProfileScreen({ navigation }: any) {
           </Text>
         </TouchableOpacity>
       </ScrollView>
+
+      {/* Add New Address Modal */}
+      <Modal visible={showAddModal} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { backgroundColor: theme.surface }]}>
+            <View style={styles.modalHeader}>
+              <Text style={[styles.modalTitle, { color: theme.textPrimary }]}>Add New Delivery Address 📍</Text>
+              <TouchableOpacity onPress={() => setShowAddModal(false)}>
+                <Text style={[styles.closeModalText, { color: theme.textMuted }]}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={{ maxHeight: 420 }}>
+              {/* GPS Auto-Fill Button */}
+              <TouchableOpacity
+                style={[styles.gpsButton, { backgroundColor: '#1565C0' }]}
+                onPress={handleDetectLocation}
+                disabled={locating}
+              >
+                {locating ? (
+                  <ActivityIndicator color="#FFF" size="small" />
+                ) : (
+                  <Text style={styles.gpsButtonText}>📍 Detect My Location (GPS Auto-Fill)</Text>
+                )}
+              </TouchableOpacity>
+
+              {detectedLat != null && (
+                <Text style={[styles.gpsHint, { color: theme.textMuted }]}>
+                  ✓ GPS captured: {detectedLat.toFixed(4)}, {detectedLng?.toFixed(4)}
+                </Text>
+              )}
+
+              {/* Address Tag Selection */}
+              <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>Address Tag</Text>
+              <View style={styles.tagRow}>
+                {(['Home', 'Work', 'Other'] as const).map(tag => (
+                  <TouchableOpacity
+                    key={tag}
+                    style={[
+                      styles.tagChip,
+                      {
+                        backgroundColor: label === tag ? theme.primary : theme.inputBg,
+                        borderColor: label === tag ? theme.primary : theme.inputBorder,
+                      },
+                    ]}
+                    onPress={() => setLabel(tag)}
+                  >
+                    <Text style={{ color: label === tag ? '#FFF' : theme.textPrimary, fontWeight: '700', fontSize: 13 }}>
+                      {tag}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>Recipient Name *</Text>
+              <TextInput
+                style={inputStyle}
+                value={receiverName}
+                onChangeText={setReceiverName}
+                placeholder="Full Name"
+                placeholderTextColor={theme.textMuted}
+              />
+
+              <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>Contact Number *</Text>
+              <TextInput
+                style={inputStyle}
+                value={receiverPhone}
+                onChangeText={setReceiverPhone}
+                placeholder="+91 98765 43210"
+                placeholderTextColor={theme.textMuted}
+                keyboardType="phone-pad"
+              />
+
+              <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>Flat / House No., Building, Street *</Text>
+              <TextInput
+                style={inputStyle}
+                value={line1}
+                onChangeText={setLine1}
+                placeholder="Flat 402, Green Park Residency, Sector 15"
+                placeholderTextColor={theme.textMuted}
+                multiline
+              />
+
+              <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>Landmark (Optional)</Text>
+              <TextInput
+                style={inputStyle}
+                value={landmark}
+                onChangeText={setLandmark}
+                placeholder="Near D-Mart"
+                placeholderTextColor={theme.textMuted}
+              />
+
+              <View style={{ flexDirection: 'row' }}>
+                <View style={{ flex: 1, marginRight: 8 }}>
+                  <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>City *</Text>
+                  <TextInput
+                    style={inputStyle}
+                    value={city}
+                    onChangeText={setCity}
+                    placeholder="Mumbai"
+                    placeholderTextColor={theme.textMuted}
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>PIN Code</Text>
+                  <TextInput
+                    style={inputStyle}
+                    value={zip}
+                    onChangeText={setZip}
+                    placeholder="400001"
+                    placeholderTextColor={theme.textMuted}
+                    keyboardType="numeric"
+                    maxLength={6}
+                  />
+                </View>
+              </View>
+            </ScrollView>
+
+            <TouchableOpacity
+              style={[styles.saveModalButton, { backgroundColor: theme.primary }]}
+              onPress={handleSaveAddress}
+              disabled={savingAddress}
+            >
+              {savingAddress ? (
+                <ActivityIndicator color="#FFF" />
+              ) : (
+                <Text style={styles.saveModalButtonText}>Save Address to Profile</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -285,13 +575,27 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: 'center',
     borderWidth: 1,
-    minHeight: 44, // Touch target requirement
+    minHeight: 44,
     justifyContent: 'center',
   },
   themeChipText: { fontSize: 13, fontWeight: '700' },
-  addressRow: { marginBottom: 10 },
-  addrLabel: { fontSize: 13, fontWeight: '700' },
-  addrLine: { fontSize: 13, marginTop: 2 },
+  emptyAddressContainer: { paddingVertical: 12, alignItems: 'center' },
+  emptyAddressText: { fontSize: 13, textAlign: 'center', leadingHeight: 18 } as any,
+  addressCard: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 12,
+  },
+  addressHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
+  labelBadge: { paddingHorizontal: 10, paddingVertical: 3, borderRadius: 6 },
+  labelBadgeText: { fontSize: 11, fontWeight: '800' },
+  deleteButton: { padding: 4 },
+  deleteButtonText: { fontSize: 11, fontWeight: '700', color: '#E53935' },
+  addrName: { fontSize: 13, fontWeight: '700', marginBottom: 2 },
+  addrLine: { fontSize: 13, leadingHeight: 18 } as any,
+  addrLandmark: { fontSize: 11, marginTop: 2 },
+  addrGps: { fontSize: 11, fontWeight: '700', marginTop: 4 },
   addAddrButton: {
     marginTop: 8,
     paddingTop: 12,
@@ -320,4 +624,58 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   logoutText: { fontSize: 15, fontWeight: '700' },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  modalContent: {
+    borderRadius: 20,
+    padding: 20,
+    maxHeight: '90%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  modalTitle: { fontSize: 17, fontWeight: '800' },
+  closeModalText: { fontSize: 20, fontWeight: '800' },
+  gpsButton: {
+    borderRadius: 10,
+    paddingVertical: 11,
+    alignItems: 'center',
+    marginBottom: 10,
+    minHeight: 44,
+    justifyContent: 'center',
+  },
+  gpsButtonText: { color: '#FFF', fontWeight: '700', fontSize: 13 },
+  gpsHint: { fontSize: 11, marginBottom: 10, textAlign: 'center' },
+  modalLabel: { fontSize: 12, fontWeight: '600', marginBottom: 4, marginTop: 8 },
+  modalInput: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    minHeight: 44,
+  },
+  tagRow: { flexDirection: 'row', marginBottom: 4 },
+  tagChip: {
+    flex: 1,
+    paddingVertical: 8,
+    marginRight: 6,
+    borderRadius: 8,
+    alignItems: 'center',
+    borderWidth: 1,
+  },
+  saveModalButton: {
+    marginTop: 16,
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  saveModalButtonText: { color: '#FFF', fontSize: 15, fontWeight: '700' },
 });

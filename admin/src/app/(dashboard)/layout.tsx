@@ -17,6 +17,8 @@ import {
   LogOut,
   Radio,
   Package,
+  Settings2,
+  MapPin,
 } from 'lucide-react';
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -88,6 +90,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       name: 'System Audit Logs',
       href: '/audit-logs',
       icon: ShieldAlert,
+      roles: ['super_admin'],
+    },
+    {
+      name: 'Delivery Settings',
+      href: '/settings',
+      icon: MapPin,
       roles: ['super_admin'],
     },
   ];

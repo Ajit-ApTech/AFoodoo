@@ -38,6 +38,21 @@ export type OrderStatus =
   | 'delivered'
   | 'cancelled';
 
+export interface DeliveryAddress {
+  id?: string;
+  label: string;
+  receiver_name?: string;
+  receiver_phone?: string;
+  line1: string;
+  landmark?: string;
+  city: string;
+  state?: string;
+  zip?: string;
+  latitude?: number;
+  longitude?: number;
+  maps_link?: string;
+}
+
 export interface Order {
   id: string;
   user_id: string;
@@ -48,18 +63,35 @@ export interface Order {
   meal_slot_id: string;
   slot_name?: string;
   status: OrderStatus;
-  delivery_address: {
-    label: string;
-    line1: string;
-    city: string;
-    zip?: string;
-  };
+  delivery_address: DeliveryAddress;
+  delivery_name?: string;
+  delivery_phone?: string;
+  delivery_lat?: number;
+  delivery_lng?: number;
+  delivery_distance_km?: number;
+  maps_link?: string;
   payment_status: 'paid' | 'pending' | 'failed';
   otp_code?: string;
   delivery_zone_id?: string;
   zone_name?: string;
   tiffin_returned?: boolean;
+  total_amount?: number;
+  delivery_window?: string;
+  delivery_start?: string;
+  delivery_end?: string;
   created_at: string;
+  [key: string]: any;
+}
+
+export interface DeliveryConfig {
+  kitchen_name: string;
+  kitchen_address: string;
+  kitchen_lat: number;
+  kitchen_lng: number;
+  kitchen_maps_link: string;
+  max_delivery_radius_km: number;
+  rider_whatsapp: string;
+  updated_at: string;
 }
 
 export interface UserAccount {
