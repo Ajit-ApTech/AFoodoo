@@ -8,43 +8,79 @@ import {
   Alert,
   SafeAreaView,
   ScrollView,
-  Image,
   ActivityIndicator,
 } from 'react-native';
+import { firestore } from '../firebaseConfig';
 import { useAppStore } from '../store/appStore';
-import { fetchSubscriptions } from '../api/subscriptions';
+import { useTheme } from '../theme/ThemeContext';
+import { syncUserWithFirestore } from '../api/firestoreApi';
+
+const COUNTRY_CODES = [
+  { label: '🇮🇳 +91', value: '91' },
+  { label: '🇺🇸 +1', value: '1' },
+  { label: '🇬🇧 +44', value: '44' },
+  { label: '🇦🇪 +971', value: '971' },
+  { label: '🇸🇬 +65', value: '65' },
+  { label: '🇦🇺 +61', value: '61' },
+];
 
 export default function AuthScreen({ navigation }: any) {
+  const { theme } = useTheme();
+  const [countryCode, setCountryCode] = useState('91');
   const [phone, setPhone] = useState('');
+  const [showCountryPicker, setShowCountryPicker] = useState(false);
   const [code, setCode] = useState('');
   const [address, setAddress] = useState('Flat 402, Green Park Residency, Sector 15');
   const [verificationId, setVerificationId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<string>('');
   const setUser = useAppStore(state => state.setUser);
 
-  const sendOtp = async () => {
-    if (!phone || phone.length < 8) {
-      Alert.alert('Invalid Number', 'Please enter a valid phone number with country code');
+  const fullPhone = `+${countryCode}${phone.replace(/\D/g, '')}`;
+  const selectedCountry = COUNTRY_CODES.find(c => c.value === countryCode) || COUNTRY_CODES[0];
+
+  const sendOtp = () => {
+    if (!phone || phone.replace(/\D/g, '').length < 7) {
+      Alert.alert('Invalid Number', 'Please enter a valid mobile number (7–10 digits).');
       return;
     }
-    setLoading(true);
-    setTimeout(() => {
-      setLoading(false);
-      setVerificationId('demo-verification-id');
-      Alert.alert('OTP Sent', 'Demo verification code: 123456');
-    }, 600);
+
+    const dynamicCode = Math.floor(100000 + Math.random() * 900000).toString();
+    setCode(dynamicCode);
+    setVerificationId(`verif_${Date.now()}`);
+    Alert.alert(
+      'OTP Sent 📲',
+      `Phone: ${fullPhone}\n\nYour 6-Digit OTP: ${dynamicCode}\n\n(Auto-filled for quick login)`
+    );
   };
 
   const confirmOtp = async () => {
-    if (!code) {
-      Alert.alert('Required', 'Please enter the 6-digit OTP code');
+    if (!code || code.trim().length < 6) {
+      Alert.alert('Required', 'Please enter the 6-digit OTP code.');
       return;
     }
+
     setLoading(true);
-    const demoUser = {
-      id: `usr_${Date.now()}`,
-      name: 'Gourmet Customer',
-      phone: phone || '+91 9876543210',
+    const cleanDigits = phone.replace(/\D/g, '') || '9876543210';
+    const userDocId = `usr_${countryCode}${cleanDigits}`;
+
+    // Sync or create user in Cloud Firestore
+    const firestoreUserData: any = await syncUserWithFirestore(fullPhone);
+    if (firestoreUserData?.is_blocked) {
+      setLoading(false);
+      Alert.alert(
+        'Account Suspended 🔒',
+        'Your user account has been suspended by administration. Please contact support.'
+      );
+      return;
+    }
+
+    const authenticatedUser = {
+      id: firestoreUserData?.id || userDocId,
+      name: firestoreUserData?.name || `Customer (${fullPhone})`,
+      phone: fullPhone,
+      wallet_balance: firestoreUserData?.wallet_balance ?? 500,
+      is_blocked: firestoreUserData?.is_blocked || false,
       addresses: [
         {
           label: 'Home',
@@ -56,25 +92,17 @@ export default function AuthScreen({ navigation }: any) {
           longitude: 72.877,
         },
       ],
-      wallet_balance: 500,
-      subscription_ids: [],
-      created_at: new Date().toISOString(),
+      default_address_id: 'addr_1',
+      subscription_status: 'none',
+      loyalty_points: 120,
     };
 
-    try {
-      setUser(demoUser);
-      const subs = await fetchSubscriptions(demoUser.id);
-      useAppStore.getState().setSubscriptions(subs);
-    } catch (e) {
-      console.log('Using initial subscriptions state');
-    } finally {
-      setLoading(false);
-      navigation.replace('Home');
-    }
+    setUser(authenticatedUser as any);
+    setLoading(false);
+    navigation.replace('Home');
   };
 
-  const handleGuestLogin = async () => {
-    setLoading(true);
+  const handleGuestLogin = () => {
     const guestUser = {
       id: 'guest-user-456',
       name: 'Guest Diner',
@@ -94,58 +122,116 @@ export default function AuthScreen({ navigation }: any) {
       subscription_ids: ['sub-demo-1'],
       created_at: new Date().toISOString(),
     };
-
-    try {
-      setUser(guestUser);
-      const subs = await fetchSubscriptions(guestUser.id);
-      useAppStore.getState().setSubscriptions(subs);
-    } catch (e) {
-      console.log('Subscriptions fallback for guest login');
-    } finally {
-      setLoading(false);
-      navigation.replace('Home');
-    }
+    setUser(guestUser);
+    navigation.replace('Home');
   };
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
         {/* Brand Header */}
         <View style={styles.headerContainer}>
-          <View style={styles.logoBadge}>
+          <View style={[styles.logoBadge, { backgroundColor: theme.surface }]}>
             <Text style={styles.logoEmoji}>🍲</Text>
           </View>
-          <Text style={styles.brandTitle}>AFoodoo</Text>
-          <Text style={styles.brandSubtitle}>Home-Cooked Tiffin Meals • Fixed Delivery Windows</Text>
+          <Text style={[styles.brandTitle, { color: theme.primary }]}>AFoodoo</Text>
+          <Text style={[styles.brandSubtitle, { color: theme.textSecondary }]}>
+            Home-Cooked Tiffin Meals • Fixed Delivery Windows
+          </Text>
         </View>
 
         {/* Auth Form Card */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Phone Number Login</Text>
-          <Text style={styles.cardSubtitle}>
-            Enter your mobile number to receive a 1-time verification passcode.
+        <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}>
+          <Text style={[styles.cardTitle, { color: theme.textPrimary }]}>Phone Sign In 🔐</Text>
+          <Text style={[styles.cardSubtitle, { color: theme.textSecondary }]}>
+            Enter your mobile number to get a one-time verification code.
           </Text>
 
+          {/* Country Code + Phone Number Row */}
           <View style={styles.inputGroup}>
-            <Text style={styles.inputLabel}>Mobile Number</Text>
-            <TextInput
-              placeholder="+91 98765 43210"
-              placeholderTextColor="#9E9E9E"
-              keyboardType="phone-pad"
-              style={styles.input}
-              value={phone}
-              onChangeText={setPhone}
-            />
+            <Text style={[styles.inputLabel, { color: theme.textPrimary }]}>Mobile Number</Text>
+            <View style={styles.phoneRow}>
+              {/* Country Code Picker Button */}
+              <TouchableOpacity
+                style={[styles.countryCodeBtn, { backgroundColor: theme.inputBg, borderColor: theme.inputBorder }]}
+                onPress={() => setShowCountryPicker(!showCountryPicker)}
+              >
+                <Text style={[styles.countryCodeText, { color: theme.inputText }]}>
+                  {selectedCountry.label}
+                </Text>
+                <Text style={{ color: theme.textMuted, fontSize: 10 }}>▼</Text>
+              </TouchableOpacity>
+
+              {/* Phone Number Input */}
+              <TextInput
+                placeholder="98765 43210"
+                placeholderTextColor={theme.textMuted}
+                keyboardType="number-pad"
+                style={[
+                  styles.phoneInput,
+                  {
+                    backgroundColor: theme.inputBg,
+                    borderColor: theme.inputBorder,
+                    color: theme.inputText,
+                  },
+                ]}
+                value={phone}
+                onChangeText={setPhone}
+                maxLength={10}
+              />
+            </View>
+
+            {/* Country Code Dropdown */}
+            {showCountryPicker && (
+              <View style={[styles.dropdown, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}>
+                {COUNTRY_CODES.map(country => (
+                  <TouchableOpacity
+                    key={country.value}
+                    style={[
+                      styles.dropdownItem,
+                      countryCode === country.value && { backgroundColor: theme.primaryLight },
+                    ]}
+                    onPress={() => {
+                      setCountryCode(country.value);
+                      setShowCountryPicker(false);
+                    }}
+                  >
+                    <Text style={[styles.dropdownItemText, { color: theme.textPrimary }]}>
+                      {country.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+
+            {/* Show assembled full number */}
+            {phone.replace(/\D/g, '').length > 0 && (
+              <Text style={[styles.fullPhonePreview, { color: theme.textSecondary }]}>
+                Full number: {fullPhone}
+              </Text>
+            )}
           </View>
 
+          {/* OTP Input */}
           {verificationId ? (
             <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Enter OTP Code</Text>
+              <Text style={[styles.inputLabel, { color: theme.textPrimary }]}>6-Digit OTP Code</Text>
               <TextInput
-                placeholder="123456 (Demo Code)"
-                placeholderTextColor="#9E9E9E"
+                placeholder="Enter OTP"
+                placeholderTextColor={theme.textMuted}
                 keyboardType="numeric"
-                style={styles.input}
+                style={[
+                  styles.input,
+                  {
+                    backgroundColor: theme.inputBg,
+                    borderColor: theme.inputBorder,
+                    color: theme.inputText,
+                    letterSpacing: 6,
+                    textAlign: 'center',
+                    fontSize: 20,
+                    fontWeight: '700',
+                  },
+                ]}
                 value={code}
                 onChangeText={setCode}
                 maxLength={6}
@@ -153,57 +239,94 @@ export default function AuthScreen({ navigation }: any) {
             </View>
           ) : null}
 
-          {/* Delivery Address Pin Drop Capture */}
+          {/* Delivery Address */}
           <View style={styles.inputGroup}>
-            <Text style={styles.inputLabel}>Delivery Location 📍</Text>
+            <Text style={[styles.inputLabel, { color: theme.textPrimary }]}>Delivery Address 📍</Text>
             <TextInput
-              placeholder="Delivery Address"
-              placeholderTextColor="#9E9E9E"
-              style={styles.input}
+              placeholder="Flat No., Building, Area"
+              placeholderTextColor={theme.textMuted}
+              style={[
+                styles.input,
+                {
+                  backgroundColor: theme.inputBg,
+                  borderColor: theme.inputBorder,
+                  color: theme.inputText,
+                },
+              ]}
               value={address}
               onChangeText={setAddress}
             />
           </View>
 
           <TouchableOpacity
-            style={styles.primaryButton}
+            style={[styles.primaryButton, { backgroundColor: theme.primary }]}
             onPress={verificationId ? confirmOtp : sendOtp}
             disabled={loading}
           >
             {loading ? (
               <ActivityIndicator color="#FFF" />
             ) : (
-              <Text style={styles.primaryButtonText}>
-                {verificationId ? 'Verify & Continue' : 'Send OTP Code'}
+              <Text style={[styles.primaryButtonText, { color: theme.buttonText }]}>
+                {verificationId ? 'Verify OTP & Sign In ✓' : 'Send OTP Code →'}
               </Text>
             )}
           </TouchableOpacity>
 
+          {verificationId && (
+            <TouchableOpacity
+              style={styles.resendRow}
+              onPress={() => {
+                setVerificationId(null);
+                setCode('');
+              }}
+            >
+              <Text style={[styles.resendText, { color: theme.textSecondary }]}>
+                ← Change number or resend OTP
+              </Text>
+            </TouchableOpacity>
+          )}
+
           <View style={styles.dividerRow}>
-            <View style={styles.dividerLine} />
-            <Text style={styles.dividerText}>or</Text>
-            <View style={styles.dividerLine} />
+            <View style={[styles.dividerLine, { backgroundColor: theme.surfaceBorder }]} />
+            <Text style={[styles.dividerText, { color: theme.textMuted }]}>or</Text>
+            <View style={[styles.dividerLine, { backgroundColor: theme.surfaceBorder }]} />
           </View>
 
           <TouchableOpacity
-            style={styles.guestButton}
+            style={[
+              styles.guestButton,
+              { backgroundColor: theme.primaryLight, borderColor: theme.accentBadgeBg },
+            ]}
             onPress={handleGuestLogin}
             disabled={loading}
           >
-            <Text style={styles.guestButtonText}>Explore Demo Mode as Guest</Text>
+            <Text style={[styles.guestButtonText, { color: theme.primary }]}>
+              Explore as Guest →
+            </Text>
           </TouchableOpacity>
         </View>
 
         {/* Slot Window Info Footer */}
-        <View style={styles.windowInfoCard}>
-          <Text style={styles.windowInfoTitle}>⏰ Daily Tiffin Cutoff Windows</Text>
+        <View
+          style={[
+            styles.windowInfoCard,
+            { backgroundColor: theme.primaryLight, borderColor: theme.accentBadgeBg },
+          ]}
+        >
+          <Text style={[styles.windowInfoTitle, { color: theme.accent }]}>
+            ⏰ Daily Tiffin Cutoff Windows
+          </Text>
           <View style={styles.windowRow}>
-            <Text style={styles.windowBadge}>Lunch</Text>
-            <Text style={styles.windowText}>Book 8:00 AM – 11:00 AM  •  Delivered 1–2 PM</Text>
+            <Text style={[styles.windowBadge, { backgroundColor: theme.primary }]}>Lunch</Text>
+            <Text style={[styles.windowText, { color: theme.textPrimary }]}>
+              Book 8:00 AM – 11:00 AM  •  Delivered 1–2 PM
+            </Text>
           </View>
           <View style={styles.windowRow}>
-            <Text style={styles.windowBadge}>Dinner</Text>
-            <Text style={styles.windowText}>Book 5:00 PM – 7:00 PM  •  Delivered 8–9 PM</Text>
+            <Text style={[styles.windowBadge, { backgroundColor: theme.primary }]}>Dinner</Text>
+            <Text style={[styles.windowText, { color: theme.textPrimary }]}>
+              Book 5:00 PM – 7:00 PM  •  Delivered 8–9 PM
+            </Text>
           </View>
         </View>
       </ScrollView>
@@ -212,14 +335,10 @@ export default function AuthScreen({ navigation }: any) {
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: '#FAF7F2',
-  },
+  safeArea: { flex: 1 },
   container: {
     paddingHorizontal: 24,
     paddingVertical: 32,
-    justifyContent: 'center',
   },
   headerContainer: {
     alignItems: 'center',
@@ -229,139 +348,117 @@ const styles = StyleSheet.create({
     width: 72,
     height: 72,
     borderRadius: 36,
-    backgroundColor: '#FFF',
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 12,
-    shadowColor: '#D84315',
+    shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
+    shadowOpacity: 0.1,
     shadowRadius: 10,
     elevation: 4,
   },
-  logoEmoji: {
-    fontSize: 38,
-    marginTop: 12,
-  },
-  brandTitle: {
-    fontSize: 32,
-    fontWeight: '800',
-    color: '#D84315',
-    letterSpacing: 0.5,
-  },
-  brandSubtitle: {
-    fontSize: 13,
-    color: '#666',
-    marginTop: 4,
-    textAlign: 'center',
-  },
+  logoEmoji: { fontSize: 38, marginTop: 4 },
+  brandTitle: { fontSize: 32, fontWeight: '800', letterSpacing: 0.5 },
+  brandSubtitle: { fontSize: 13, marginTop: 4, textAlign: 'center' },
   card: {
-    backgroundColor: '#FFFFFF',
     borderRadius: 20,
     padding: 24,
+    borderWidth: 1,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
+    shadowOpacity: 0.05,
     shadowRadius: 12,
     elevation: 3,
   },
-  cardTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#2C2C2C',
-    marginBottom: 4,
+  cardTitle: { fontSize: 20, fontWeight: '700', marginBottom: 4 },
+  cardSubtitle: { fontSize: 13, marginBottom: 20, lineHeight: 18 },
+  inputGroup: { marginBottom: 16 },
+  inputLabel: { fontSize: 13, fontWeight: '600', marginBottom: 6 },
+  phoneRow: {
+    flexDirection: 'row',
+    gap: 8,
   },
-  cardSubtitle: {
-    fontSize: 13,
-    color: '#757575',
-    marginBottom: 20,
-    lineHeight: 18,
+  countryCodeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    minHeight: 48,
   },
-  inputGroup: {
-    marginBottom: 16,
-  },
-  inputLabel: {
-    fontSize: 13,
+  countryCodeText: { fontSize: 14, fontWeight: '600' },
+  phoneInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 16,
     fontWeight: '600',
-    color: '#424242',
-    marginBottom: 6,
+    minHeight: 48,
+  },
+  dropdown: {
+    marginTop: 4,
+    borderWidth: 1,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  dropdownItem: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  dropdownItemText: { fontSize: 15 },
+  fullPhonePreview: {
+    fontSize: 11,
+    marginTop: 4,
+    marginLeft: 2,
   },
   input: {
-    backgroundColor: '#FAF9F6',
     borderWidth: 1,
-    borderColor: '#E0E0E0',
     borderRadius: 12,
     paddingHorizontal: 14,
     paddingVertical: 12,
     fontSize: 15,
-    color: '#2C2C2C',
+    minHeight: 48,
   },
   primaryButton: {
-    backgroundColor: '#D84315',
     borderRadius: 12,
     paddingVertical: 14,
     alignItems: 'center',
     marginTop: 8,
-    shadowColor: '#D84315',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-    elevation: 3,
+    minHeight: 48,
+    justifyContent: 'center',
   },
-  primaryButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '700',
-  },
+  primaryButtonText: { fontSize: 16, fontWeight: '700' },
+  resendRow: { alignItems: 'center', marginTop: 12 },
+  resendText: { fontSize: 13 },
   dividerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     marginVertical: 18,
   },
-  dividerLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: '#EEEEEE',
-  },
-  dividerText: {
-    marginHorizontal: 12,
-    color: '#9E9E9E',
-    fontSize: 12,
-  },
+  dividerLine: { flex: 1, height: 1 },
+  dividerText: { marginHorizontal: 12, fontSize: 12 },
   guestButton: {
-    backgroundColor: '#FAF7F2',
     borderWidth: 1,
-    borderColor: '#FFE0B2',
     borderRadius: 12,
     paddingVertical: 13,
     alignItems: 'center',
+    minHeight: 48,
+    justifyContent: 'center',
   },
-  guestButtonText: {
-    color: '#D84315',
-    fontSize: 15,
-    fontWeight: '600',
-  },
+  guestButtonText: { fontSize: 15, fontWeight: '600' },
   windowInfoCard: {
-    backgroundColor: '#FFF3E0',
     borderRadius: 16,
     padding: 16,
     marginTop: 24,
     borderWidth: 1,
-    borderColor: '#FFE0B2',
   },
-  windowInfoTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#E65100',
-    marginBottom: 10,
-  },
-  windowRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 6,
-  },
+  windowInfoTitle: { fontSize: 13, fontWeight: '700', marginBottom: 10 },
+  windowRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
   windowBadge: {
-    backgroundColor: '#D84315',
     color: '#FFF',
     fontSize: 10,
     fontWeight: '700',
@@ -370,8 +467,5 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     marginRight: 8,
   },
-  windowText: {
-    fontSize: 12,
-    color: '#4E342E',
-  },
+  windowText: { fontSize: 12 },
 });

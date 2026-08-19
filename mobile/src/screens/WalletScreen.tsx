@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -7,93 +7,168 @@ import {
   SafeAreaView,
   ScrollView,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { useAppStore } from '../store/appStore';
-
-const INITIAL_TRANSACTIONS = [
-  { id: 't1', type: 'debit', title: 'North Indian Thali Booking', amount: -12.99, time: 'Today, 9:15 AM' },
-  { id: 't2', type: 'topup', title: 'Wallet Top-Up via UPI', amount: 50.00, time: 'Yesterday, 6:30 PM' },
-  { id: 't3', type: 'refund', title: 'Cancelled Slot Refund', amount: 14.99, time: 'Aug 10, 11:05 AM' },
-  { id: 't4', type: 'topup', title: 'Initial Welcome Bonus', amount: 500.00, time: 'Aug 01, 10:00 AM' },
-];
+import { useTheme } from '../theme/ThemeContext';
+import { collection, onSnapshot } from 'firebase/firestore';
+import { firestore } from '../firebaseConfig';
 
 export default function WalletScreen() {
+  const { theme } = useTheme();
   const user = useAppStore(state => state.user);
-  const setUser = useAppStore(state => state.setUser);
-  const [transactions, setTransactions] = useState(INITIAL_TRANSACTIONS);
+  const creditWalletBalance = useAppStore(state => state.creditWalletBalance);
 
-  const currentBalance = user?.wallet_balance ?? 500.0;
+  const [topUpLoading, setTopUpLoading] = useState<number | null>(null);
+  const [realTransactions, setRealTransactions] = useState<any[]>([]);
 
-  const handleTopUp = (amount: number) => {
-    if (!user) return;
-    const newBalance = currentBalance + amount;
-    setUser({ ...user, wallet_balance: newBalance });
+  const currentBalance = user?.wallet_balance ?? 500;
 
-    const newTx = {
-      id: `tx_${Date.now()}`,
-      type: 'topup',
-      title: `Wallet Top-Up (+$${amount})`,
-      amount: amount,
-      time: 'Just now',
-    };
-    setTransactions([newTx, ...transactions]);
+  // Real-time Cloud Firestore subscription for user's wallet transactions
+  useEffect(() => {
+    if (!user?.phone) return;
+    const cleanPhone = user.phone.trim();
+    const userDocId = user.id || `usr_${cleanPhone.replace(/\D/g, '')}`;
 
-    Alert.alert('Top-Up Successful 💳', `$${amount} added to your AFoodoo Wallet. New balance: $${newBalance.toFixed(2)}.`);
+    try {
+      const unsub = onSnapshot(collection(firestore, 'wallet_transactions'), snap => {
+        if (!snap.empty) {
+          const list = snap.docs
+            .map(d => ({ id: d.id, ...d.data() }))
+            .filter((d: any) => d.user_phone === cleanPhone || d.user_id === userDocId)
+            .sort((a: any, b: any) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+          setRealTransactions(list);
+        }
+      });
+      return unsub;
+    } catch (e) {}
+  }, [user?.phone, user?.id]);
+
+  const handleTopUp = async (amount: number) => {
+    if (!user) {
+      Alert.alert('Authentication Required', 'Please sign in to top up your wallet.');
+      return;
+    }
+
+    setTopUpLoading(amount);
+    // Simulate payment gateway processing
+    await new Promise(resolve => setTimeout(resolve, 800));
+
+    try {
+      creditWalletBalance(amount, `Wallet Top-Up via UPI (+₹${amount}) 💳`, 'topup');
+      Alert.alert(
+        'Top-Up Successful 💳',
+        `₹${amount.toLocaleString('en-IN')} added to your AFoodoo Wallet.\nNew balance: ₹${(currentBalance + amount).toLocaleString('en-IN')}.`
+      );
+    } finally {
+      setTopUpLoading(null);
+    }
+  };
+
+  const typeIcon: Record<string, string> = {
+    topup: '🟢',
+    plan_credit: '🟠',
+    debit: '🔴',
+    refund: '🔵',
   };
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
       <ScrollView contentContainerStyle={styles.container}>
-        <Text style={styles.pageTitle}>AFoodoo Wallet 👛</Text>
+        <Text style={[styles.pageTitle, { color: theme.textPrimary }]}>AFoodoo Wallet 👛</Text>
 
         {/* Balance Card */}
-        <View style={styles.balanceCard}>
+        <View style={[styles.balanceCard, { backgroundColor: theme.primary }]}>
           <Text style={styles.balanceLabel}>AVAILABLE WALLET BALANCE</Text>
-          <Text style={styles.balanceValue}>${currentBalance.toFixed(2)}</Text>
-          <Text style={styles.balanceSub}>Use wallet for instant 1-tap booking without OTPs</Text>
+          <Text style={styles.balanceValue}>₹{currentBalance.toLocaleString('en-IN')}</Text>
+          <Text style={styles.balanceSub}>Use wallet for instant 1-tap tiffin booking without OTPs</Text>
+        </View>
+
+        {/* Credit Legend */}
+        <View
+          style={[
+            styles.legendRow,
+            { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
+          ]}
+        >
+          <Text style={[styles.legendItem, { color: theme.textPrimary }]}>🟢 Top-Up</Text>
+          <Text style={[styles.legendItem, { color: theme.textPrimary }]}>🟠 Plan Credit</Text>
+          <Text style={[styles.legendItem, { color: theme.textPrimary }]}>🔴 Debit</Text>
+          <Text style={[styles.legendItem, { color: theme.textPrimary }]}>🔵 Refund</Text>
         </View>
 
         {/* Quick Top Up Actions */}
-        <Text style={styles.sectionTitle}>Quick Top-Up</Text>
+        <Text style={[styles.sectionTitle, { color: theme.textPrimary }]}>Quick Top-Up (Stripe / UPI Stub)</Text>
         <View style={styles.topUpRow}>
-          {[20, 50, 100].map(amount => (
+          {[100, 250, 500].map(amount => (
             <TouchableOpacity
               key={amount}
-              style={styles.topUpChip}
+              style={[
+                styles.topUpChip,
+                { backgroundColor: theme.surface, borderColor: theme.accentBadgeBg },
+              ]}
               onPress={() => handleTopUp(amount)}
+              disabled={topUpLoading !== null}
             >
-              <Text style={styles.topUpChipText}>+${amount}</Text>
+              {topUpLoading === amount ? (
+                <ActivityIndicator color={theme.primary} />
+              ) : (
+                <Text style={[styles.topUpChipText, { color: theme.accent }]}>+₹{amount}</Text>
+              )}
             </TouchableOpacity>
           ))}
         </View>
 
         {/* Transaction History */}
-        <Text style={[styles.sectionTitle, { marginTop: 24 }]}>Recent Transactions</Text>
-        <View style={styles.txCard}>
-          {transactions.map((tx, idx) => (
-            <View key={tx.id}>
-              <View style={styles.txRow}>
-                <View style={styles.txIconBadge}>
-                  <Text style={styles.txIcon}>
-                    {tx.type === 'topup' ? '🟢' : tx.type === 'debit' ? '🔴' : '🔵'}
-                  </Text>
+        <Text style={[styles.sectionTitle, { color: theme.textPrimary, marginTop: 24 }]}>
+          Transaction History
+        </Text>
+        <View
+          style={[
+            styles.txCard,
+            { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
+          ]}
+        >
+          {realTransactions.length === 0 ? (
+            <Text style={[styles.emptyTx, { color: theme.textMuted }]}>
+              No transactions recorded in Firebase yet.
+            </Text>
+          ) : (
+            realTransactions.map((tx, idx) => {
+              const isCredit = tx.type === 'CREDIT' || tx.type === 'topup' || tx.type === 'plan_credit' || (tx.amount && tx.amount > 0);
+              const displayAmt = Math.abs(tx.amount || 0);
+              const txTimeStr = tx.timestamp ? new Date(tx.timestamp).toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' }) : 'Recently';
+
+              return (
+                <View key={tx.id || `tx_${idx}`}>
+                  <View style={styles.txRow}>
+                    <View style={styles.txIconBadge}>
+                      <Text style={styles.txIcon}>{isCredit ? '🟢' : '🔴'}</Text>
+                    </View>
+                    <View style={styles.txInfo}>
+                      <Text style={[styles.txTitle, { color: theme.textPrimary }]}>{tx.title || tx.reason || 'Wallet Activity'}</Text>
+                      <Text style={[styles.txTime, { color: theme.textSecondary }]}>
+                        {txTimeStr}
+                      </Text>
+                    </View>
+                    <Text
+                      style={[
+                        styles.txAmount,
+                        {
+                          color: isCredit ? theme.statusSuccessText : theme.statusErrorText,
+                        },
+                      ]}
+                    >
+                      {isCredit ? `+₹${displayAmt}` : `-₹${displayAmt}`}
+                    </Text>
+                  </View>
+                  {idx < realTransactions.length - 1 && (
+                    <View style={[styles.divider, { backgroundColor: theme.surfaceBorder }]} />
+                  )}
                 </View>
-                <View style={styles.txInfo}>
-                  <Text style={styles.txTitle}>{tx.title}</Text>
-                  <Text style={styles.txTime}>{tx.time}</Text>
-                </View>
-                <Text
-                  style={[
-                    styles.txAmount,
-                    tx.amount > 0 ? styles.txAmountPositive : styles.txAmountNegative,
-                  ]}
-                >
-                  {tx.amount > 0 ? `+$${tx.amount.toFixed(2)}` : `-$${Math.abs(tx.amount).toFixed(2)}`}
-                </Text>
-              </View>
-              {idx < transactions.length - 1 && <View style={styles.divider} />}
-            </View>
-          ))}
+              );
+            })
+          )}
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -101,51 +176,56 @@ export default function WalletScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#FAF7F2' },
+  safeArea: { flex: 1 },
   container: { padding: 20 },
-  pageTitle: { fontSize: 22, fontWeight: '800', color: '#2C2C2C', marginBottom: 16 },
+  pageTitle: { fontSize: 22, fontWeight: '800', marginBottom: 16 },
   balanceCard: {
-    backgroundColor: '#D84315',
     borderRadius: 20,
     padding: 24,
-    marginBottom: 20,
-    shadowColor: '#D84315',
+    marginBottom: 16,
+    shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
+    shadowOpacity: 0.2,
     shadowRadius: 10,
     elevation: 4,
   },
   balanceLabel: { fontSize: 11, fontWeight: '800', color: '#FFE0B2', letterSpacing: 0.5 },
   balanceValue: { fontSize: 36, fontWeight: '800', color: '#FFFFFF', marginVertical: 8 },
   balanceSub: { fontSize: 12, color: '#FFCCBC' },
-  sectionTitle: { fontSize: 16, fontWeight: '700', color: '#2C2C2C', marginBottom: 12 },
+  legendRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    borderRadius: 12,
+    padding: 10,
+    marginBottom: 20,
+    borderWidth: 1,
+  },
+  legendItem: { fontSize: 11, fontWeight: '600' },
+  sectionTitle: { fontSize: 16, fontWeight: '700', marginBottom: 12 },
   topUpRow: { flexDirection: 'row', justifyContent: 'space-between' },
   topUpChip: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
     borderWidth: 1.5,
-    borderColor: '#FFE0B2',
     paddingVertical: 14,
     borderRadius: 14,
     alignItems: 'center',
     marginHorizontal: 4,
+    minHeight: 48,
+    justifyContent: 'center',
   },
-  topUpChipText: { fontSize: 16, fontWeight: '800', color: '#E65100' },
+  topUpChipText: { fontSize: 16, fontWeight: '800' },
   txCard: {
-    backgroundColor: '#FFFFFF',
     borderRadius: 16,
     padding: 16,
     borderWidth: 1,
-    borderColor: '#EEEEEE',
   },
+  emptyTx: { fontSize: 13, textAlign: 'center', paddingVertical: 20 },
   txRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8 },
   txIconBadge: { marginRight: 12 },
   txIcon: { fontSize: 18 },
   txInfo: { flex: 1 },
-  txTitle: { fontSize: 14, fontWeight: '700', color: '#2C2C2C' },
-  txTime: { fontSize: 11, color: '#757575', marginTop: 2 },
+  txTitle: { fontSize: 14, fontWeight: '700' },
+  txTime: { fontSize: 11, marginTop: 2 },
   txAmount: { fontSize: 15, fontWeight: '800' },
-  txAmountPositive: { color: '#2E7D32' },
-  txAmountNegative: { color: '#C62828' },
-  divider: { height: 1, backgroundColor: '#F5F5F5', marginVertical: 4 },
+  divider: { height: 1, marginVertical: 4 },
 });

@@ -10,112 +10,136 @@ import {
   ActivityIndicator,
   SafeAreaView,
   RefreshControl,
+  ScrollView,
 } from 'react-native';
 import { useAppStore } from '../store/appStore';
 import { firestore } from '../firebaseConfig';
-import { collection, query, where, onSnapshot, DocumentData } from '@firebase/firestore';
+import { collection, onSnapshot, DocumentData, query, where } from 'firebase/firestore';
 import dayjs from 'dayjs';
+import { useTheme } from '../theme/ThemeContext';
 
-const DEMO_MENU_ITEMS = [
-  {
-    id: 'm1',
-    title: 'North Indian Deluxe Thali',
-    description: 'Paneer Butter Masala, Dal Makhani, 3 Phulkas, Steamed Basmati Rice, Gulab Jamun & Raita.',
-    price: 12.99,
-    veg_flag: true,
-    image_url: 'https://images.unsplash.com/photo-1546833999-b9f581a1996d?auto=format&fit=crop&w=600&q=80',
-    is_available: true,
-    max_quantity: 50,
-    quantity_booked: 18,
-  },
-  {
-    id: 'm2',
-    title: 'Special Butter Chicken Meal Box',
-    description: 'Tender Smokey Chicken Tikka Gravy, Jeera Rice, Garlic Naan, Salad & Dessert.',
-    price: 14.99,
-    veg_flag: false,
-    image_url: 'https://images.unsplash.com/photo-1588166524941-3bf61a9c41db?auto=format&fit=crop&w=600&q=80',
-    is_available: true,
-    max_quantity: 40,
-    quantity_booked: 24,
-  },
-  {
-    id: 'm3',
-    title: 'Homestyle Rajma Chawal Pack',
-    description: 'Slow-cooked Punjabi Rajma, Fragrant Basmati Rice, Green Chutney, Onion Salad & Roasted Papad.',
-    price: 9.99,
-    veg_flag: true,
-    image_url: 'https://images.unsplash.com/photo-1626777552726-4a6b54c97e46?auto=format&fit=crop&w=600&q=80',
-    is_available: true,
-    max_quantity: 60,
-    quantity_booked: 42,
-  },
-  {
-    id: 'm4',
-    title: 'Egg Curry & Chapati Combo',
-    description: '2 Spiced Egg Curry, 4 Whole Wheat Chapatis, Pickle & Cucumber Salad.',
-    price: 11.49,
-    veg_flag: false,
-    image_url: 'https://images.unsplash.com/photo-1603894584373-5ac82b2ae398?auto=format&fit=crop&w=600&q=80',
-    is_available: true,
-    max_quantity: 35,
-    quantity_booked: 12,
-  },
-];
+import { fetchMenuItemsFromRest, fetchMealSlotsFromRest } from '../api/firestoreApi';
 
 export default function MenuScreen({ navigation }: any) {
+  const { theme } = useTheme();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [availableSlots, setAvailableSlots] = useState<any[]>([]);
 
   const activeSlot = useAppStore(state => state.activeSlot);
+  const setActiveSlot = useAppStore(state => state.setActiveSlot);
   const setMenuItems = useAppStore(state => state.setMenuItems);
   const menuItems = useAppStore(state => state.menuItems);
 
+  // Subscribe to all active meal_slots + REST API fetcher
   useEffect(() => {
+    let isMounted = true;
+    fetchMealSlotsFromRest().then(slots => {
+      if (isMounted && slots.length > 0) setAvailableSlots(slots);
+    });
+
     try {
-      const q = query(
-        collection(firestore, 'menu_items'),
-        where('meal_slot_id', '==', activeSlot?.id || 'default')
-      );
+      const q = collection(firestore, 'meal_slots');
       const unsub = onSnapshot(
         q,
         snap => {
-          const items = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as DocumentData));
-          if (items.length > 0) {
-            setMenuItems(items as any);
-          } else {
-            setMenuItems(DEMO_MENU_ITEMS as any);
+          if (isMounted && !snap.empty) {
+            const list = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            setAvailableSlots(list);
           }
-          setLoading(false);
+        },
+        _err => {}
+      );
+      return () => {
+        isMounted = false;
+        unsub();
+      };
+    } catch (e) {}
+  }, []);
+
+  // Subscribe to menu_items + REST API fetcher for 100% real Firebase data
+  useEffect(() => {
+    let isMounted = true;
+
+    fetchMenuItemsFromRest().then(items => {
+      if (isMounted && items.length > 0) {
+        setMenuItems(items as any);
+        setLoading(false);
+      }
+    });
+
+    try {
+      const q = collection(firestore, 'menu_items');
+      const unsub = onSnapshot(
+        q,
+        snap => {
+          if (isMounted) {
+            const items = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as DocumentData));
+            setMenuItems(items as any);
+            setLoading(false);
+          }
         },
         _err => {
-          setMenuItems(DEMO_MENU_ITEMS as any);
-          setLoading(false);
+          if (isMounted) setLoading(false);
         }
       );
-      return unsub;
+      return () => {
+        isMounted = false;
+        unsub();
+      };
     } catch (e) {
-      setMenuItems(DEMO_MENU_ITEMS as any);
-      setLoading(false);
+      if (isMounted) setLoading(false);
     }
-  }, [activeSlot]);
+  }, []);
 
-  // Determine cutoff validity
+  // Helper to parse cutoff time string like "10:30 PM" or Date/Timestamp
+  const parseTimeToDayjs = (timeVal: any): dayjs.Dayjs | null => {
+    if (!timeVal) return null;
+    if (timeVal instanceof Date) return dayjs(timeVal);
+    if (timeVal?.toDate) return dayjs(timeVal.toDate());
+    if (typeof timeVal === 'string') {
+      const match = timeVal.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+      if (match) {
+        let hours = parseInt(match[1], 10);
+        const minutes = parseInt(match[2], 10);
+        const ampm = match[3].toUpperCase();
+        if (ampm === 'PM' && hours < 12) hours += 12;
+        if (ampm === 'AM' && hours === 12) hours = 0;
+        return dayjs().set('hour', hours).set('minute', minutes).set('second', 0);
+      }
+    }
+    return null;
+  };
+
+  // Determine cutoff validity for selected active slot
+  const cutoffDayjs = parseTimeToDayjs(activeSlot?.booking_cutoff_time);
   const now = dayjs();
-  const cutoff = activeSlot?.booking_cutoff_time?.toDate
-    ? dayjs(activeSlot.booking_cutoff_time.toDate())
-    : dayjs().add(42, 'minute');
-  const isBeforeCutoff = cutoff ? now.isBefore(cutoff) : true;
+  const isBeforeCutoff = cutoffDayjs ? now.isBefore(cutoffDayjs) : true;
+
+  // Filter items specifically by activeSlot.id or activeSlot.name
+  const rawList = menuItems;
+  const filteredItems = rawList.filter((item: any) => {
+    if (!activeSlot) return true;
+    return (
+      item.meal_slot_id === activeSlot.id ||
+      item.meal_slot_id === activeSlot.name ||
+      !item.meal_slot_id
+    );
+  });
 
   const handleBook = (item: any) => {
     if (!isBeforeCutoff) {
-      Alert.alert('Cutoff Passed', 'Booking window has closed for this slot. Server rejects post-cutoff bookings.');
+      Alert.alert(
+        'Cutoff Passed 🔒',
+        'The booking cutoff time has passed for this slot. You can browse dishes for reference, but new bookings are closed.'
+      );
       return;
     }
     const remaining = (item.max_quantity || 50) - (item.quantity_booked || 0);
-    if (remaining <= 0) {
-      Alert.alert('Sold Out', 'Sorry, all portions for this menu item have been booked!');
+    const isSoldOut = item.is_available === false || remaining <= 0;
+    if (isSoldOut) {
+      Alert.alert('Sold Out 🔒', 'Sorry, this meal has been marked as sold out by admin!');
       return;
     }
     navigation.navigate('Booking', { item });
@@ -124,13 +148,16 @@ export default function MenuScreen({ navigation }: any) {
   const renderItem = ({ item }: any) => {
     const isExpanded = expandedId === item.id;
     const remaining = (item.max_quantity || 50) - (item.quantity_booked || 0);
-    const isSoldOut = remaining <= 0;
+    const isSoldOut = item.is_available === false || remaining <= 0;
 
     return (
       <TouchableOpacity
         activeOpacity={0.9}
         onPress={() => setExpandedId(isExpanded ? null : item.id)}
-        style={styles.card}
+        style={[
+          styles.card,
+          { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
+        ]}
       >
         <View style={styles.imageContainer}>
           <Image source={{ uri: item.image_url }} style={styles.image} />
@@ -141,30 +168,36 @@ export default function MenuScreen({ navigation }: any) {
 
         <View style={styles.cardContent}>
           <View style={styles.titleRow}>
-            <Text style={styles.title}>{item.title}</Text>
-            <Text style={styles.price}>${item.price.toFixed(2)}</Text>
+            <Text style={[styles.title, { color: theme.textPrimary }]}>{item.title}</Text>
+            <Text style={[styles.price, { color: theme.primary }]}>₹{item.price.toFixed(0)}</Text>
           </View>
 
-          <Text style={styles.description} numberOfLines={isExpanded ? undefined : 2}>
+          <Text style={[styles.description, { color: theme.textSecondary }]} numberOfLines={isExpanded ? undefined : 2}>
             {item.description}
           </Text>
 
           <View style={styles.metaRow}>
-            <Text style={styles.remainingText}>
+            <Text style={[styles.remainingText, { color: theme.accent }]}>
               {isSoldOut ? '❌ Sold Out' : `🔥 ${remaining} portions remaining`}
             </Text>
-            <Text style={styles.expandText}>{isExpanded ? 'Show less ▲' : 'Tap for details ▼'}</Text>
+            <Text style={[styles.expandText, { color: theme.textMuted }]}>
+              {isExpanded ? 'Show less ▲' : 'Tap for details ▼'}
+            </Text>
           </View>
 
           <TouchableOpacity
             style={[
               styles.bookButton,
-              (!isBeforeCutoff || isSoldOut) && styles.bookButtonDisabled,
+              { backgroundColor: !isBeforeCutoff || isSoldOut ? theme.disabledBg : theme.primary },
             ]}
             onPress={() => handleBook(item)}
-            disabled={!isBeforeCutoff || isSoldOut}
           >
-            <Text style={styles.bookButtonText}>
+            <Text
+              style={[
+                styles.bookButtonText,
+                { color: !isBeforeCutoff || isSoldOut ? theme.disabledText : theme.buttonText },
+              ]}
+            >
               {!isBeforeCutoff
                 ? 'Cutoff Passed 🔒'
                 : isSoldOut
@@ -178,25 +211,92 @@ export default function MenuScreen({ navigation }: any) {
   };
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <View style={styles.headerBar}>
-        <View>
-          <Text style={styles.headerTitle}>Today's Tiffin Menu</Text>
-          <Text style={styles.headerSubtitle}>Freshly prepared • Home style recipe</Text>
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
+      {/* Header Bar */}
+      <View style={[styles.headerBar, { backgroundColor: theme.surface, borderBottomColor: theme.surfaceBorder }]}>
+        <View style={styles.headerTitleCol}>
+          <Text style={[styles.headerTitle, { color: theme.textPrimary }]}>
+            {activeSlot?.name || "Today's Tiffin"} Menu
+          </Text>
+          <Text style={[styles.headerSubtitle, { color: theme.textSecondary }]}>
+            Book {activeSlot?.booking_open_time || '08:00 AM'} – {activeSlot?.booking_cutoff_time || '11:00 AM'}
+          </Text>
         </View>
-        <View style={[styles.cutoffPill, !isBeforeCutoff && styles.cutoffPillClosed]}>
-          <Text style={styles.cutoffPillText}>{isBeforeCutoff ? 'WINDOW OPEN' : 'CLOSED'}</Text>
+        <View
+          style={[
+            styles.cutoffPill,
+            { backgroundColor: isBeforeCutoff ? '#E8F5E9' : '#FFEBEE' },
+          ]}
+        >
+          <Text
+            style={[
+              styles.cutoffPillText,
+              { color: isBeforeCutoff ? '#2E7D32' : '#C62828' },
+            ]}
+          >
+            {isBeforeCutoff ? 'WINDOW OPEN' : 'CLOSED'}
+          </Text>
         </View>
       </View>
 
+      {/* Slot Selector Tab Bar */}
+      {availableSlots.length > 0 && (
+        <View style={[styles.slotTabBar, { backgroundColor: theme.surface, borderBottomColor: theme.surfaceBorder }]}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.slotTabScroll}>
+            {availableSlots.map(s => {
+              const isSelected = activeSlot?.id === s.id;
+              return (
+                <TouchableOpacity
+                  key={s.id}
+                  onPress={() => setActiveSlot(s)}
+                  style={[
+                    styles.slotTabItem,
+                    {
+                      backgroundColor: isSelected ? theme.primary : theme.background,
+                      borderColor: isSelected ? theme.primary : theme.surfaceBorder,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.slotTabText,
+                      { color: isSelected ? theme.buttonText : theme.textSecondary },
+                    ]}
+                  >
+                    {s.name}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        </View>
+      )}
+
+      {/* Post-Cutoff Notice Banner */}
+      {!isBeforeCutoff && (
+        <View style={[styles.noticeBanner, { backgroundColor: '#FFF3E0', borderColor: '#FFE0B2' }]}>
+          <Text style={styles.noticeText}>
+            🔒 Booking window closed for {activeSlot?.name || 'this slot'}. You can browse dishes below.
+          </Text>
+        </View>
+      )}
+
       {loading ? (
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#D84315" />
-          <Text style={styles.loadingText}>Fetching today's live menu…</Text>
+          <ActivityIndicator size="large" color={theme.primary} />
+          <Text style={[styles.loadingText, { color: theme.textSecondary }]}>Fetching live menu…</Text>
+        </View>
+      ) : filteredItems.length === 0 ? (
+        <View style={styles.emptyContainer}>
+          <Text style={styles.emptyEmoji}>🍱</Text>
+          <Text style={[styles.emptyTitle, { color: theme.textPrimary }]}>No Dishes for {activeSlot?.name || 'this slot'}</Text>
+          <Text style={[styles.emptySub, { color: theme.textSecondary }]}>
+            Dishes assigned to this slot by admin will appear here live.
+          </Text>
         </View>
       ) : (
         <FlatList
-          data={menuItems.length > 0 ? menuItems : DEMO_MENU_ITEMS}
+          data={filteredItems}
           renderItem={renderItem}
           keyExtractor={item => item.id}
           contentContainerStyle={styles.listContainer}
@@ -207,7 +307,7 @@ export default function MenuScreen({ navigation }: any) {
                 setRefreshing(true);
                 setTimeout(() => setRefreshing(false), 500);
               }}
-              tintColor="#D84315"
+              tintColor={theme.primary}
             />
           }
         />
@@ -217,65 +317,58 @@ export default function MenuScreen({ navigation }: any) {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#FAF7F2' },
+  safeArea: { flex: 1 },
   headerBar: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 20,
     paddingVertical: 14,
-    backgroundColor: '#FFF',
     borderBottomWidth: 1,
-    borderBottomColor: '#EEEEEE',
   },
-  headerTitle: { fontSize: 20, fontWeight: '800', color: '#2C2C2C' },
-  headerSubtitle: { fontSize: 12, color: '#757575', marginTop: 2 },
-  cutoffPill: { backgroundColor: '#E8F5E9', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
-  cutoffPillClosed: { backgroundColor: '#FFEBEE' },
-  cutoffPillText: { fontSize: 10, fontWeight: '800', color: '#2E7D32' },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  loadingText: { marginTop: 12, fontSize: 14, color: '#757575' },
-  listContainer: { padding: 16 },
-  card: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    marginBottom: 16,
-    overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 3,
+  headerTitleCol: { flex: 1, marginRight: 10 },
+  headerTitle: { fontSize: 18, fontWeight: '800' },
+  headerSubtitle: { fontSize: 12, marginTop: 2 },
+  cutoffPill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
+  cutoffPillText: { fontSize: 10, fontWeight: '800' },
+  slotTabBar: { paddingVertical: 8, borderBottomWidth: 1 },
+  slotTabScroll: { paddingHorizontal: 16, gap: 8 },
+  slotTabItem: {
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: '#F0F0F0',
   },
-  imageContainer: { height: 180, position: 'relative' },
+  slotTabText: { fontSize: 12, fontWeight: '700' },
+  noticeBanner: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    alignItems: 'center',
+  },
+  noticeText: { fontSize: 12, fontWeight: '700', color: '#E65100', textAlign: 'center' },
+  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  loadingText: { marginTop: 12, fontSize: 14 },
+  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 32 },
+  emptyEmoji: { fontSize: 44, marginBottom: 12 },
+  emptyTitle: { fontSize: 18, fontWeight: '800', textAlign: 'center', marginBottom: 6 },
+  emptySub: { fontSize: 13, textAlign: 'center', lineHeight: 18 },
+  listContainer: { paddingHorizontal: 20, paddingVertical: 16, gap: 16 },
+  card: { borderRadius: 16, borderWidth: 1, overflow: 'hidden' },
+  imageContainer: { height: 160, width: '100%', position: 'relative' },
   image: { width: '100%', height: '100%' },
-  vegBadge: {
-    position: 'absolute',
-    top: 12,
-    left: 12,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  vegBadgeGreen: { backgroundColor: '#2E7D32' },
-  vegBadgeRed: { backgroundColor: '#C62828' },
+  vegBadge: { position: 'absolute', top: 12, left: 12, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
+  vegBadgeGreen: { backgroundColor: 'rgba(46, 125, 50, 0.9)' },
+  vegBadgeRed: { backgroundColor: 'rgba(198, 40, 40, 0.9)' },
   vegBadgeText: { color: '#FFF', fontSize: 10, fontWeight: '800' },
   cardContent: { padding: 16 },
   titleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
-  title: { fontSize: 17, fontWeight: '800', color: '#2C2C2C', flex: 1, marginRight: 8 },
-  price: { fontSize: 18, fontWeight: '800', color: '#D84315' },
-  description: { fontSize: 13, color: '#616161', lineHeight: 18, marginBottom: 12 },
+  title: { fontSize: 16, fontWeight: '800', flex: 1, marginRight: 8 },
+  price: { fontSize: 18, fontWeight: '900' },
+  description: { fontSize: 13, lineHeight: 18, marginBottom: 12 },
   metaRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
-  remainingText: { fontSize: 12, fontWeight: '600', color: '#E65100' },
-  expandText: { fontSize: 11, color: '#9E9E9E' },
-  bookButton: {
-    backgroundColor: '#D84315',
-    paddingVertical: 12,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
-  bookButtonDisabled: { backgroundColor: '#B0BEC5' },
-  bookButtonText: { color: '#FFF', fontSize: 15, fontWeight: '700' },
+  remainingText: { fontSize: 12, fontWeight: '700' },
+  expandText: { fontSize: 11, fontWeight: '600' },
+  bookButton: { paddingVertical: 12, borderRadius: 10, alignItems: 'center', minHeight: 44, justifyContent: 'center' },
+  bookButtonText: { fontSize: 14, fontWeight: '800' },
 });

@@ -7,254 +7,513 @@ import {
   StyleSheet,
   SafeAreaView,
   StatusBar,
+  Alert,
 } from 'react-native';
 import { useAppStore } from '../store/appStore';
 import { firestore } from '../firebaseConfig';
-import { collection, query, where, onSnapshot, DocumentData } from '@firebase/firestore';
+import { fetchMealSlotsFromRest } from '../api/firestoreApi';
+import { collection, query, where, onSnapshot, DocumentData } from 'firebase/firestore';
 import dayjs from 'dayjs';
+import { SkeletonCard } from '../components/UIState';
+import { useTheme } from '../theme/ThemeContext';
 
 export default function HomeScreen({ navigation }: any) {
+  const { theme, isDark } = useTheme();
   const user = useAppStore(state => state.user);
+  const setUser = useAppStore(state => state.setUser);
   const subscriptions = useAppStore(state => state.subscriptions);
   const activeSlot = useAppStore(state => state.activeSlot);
   const setActiveSlot = useAppStore(state => state.setActiveSlot);
 
-  const [countdown, setCountdown] = useState<string>('');
-  const [isSlotOpen, setIsSlotOpen] = useState<boolean>(true);
-  const [slotTitle, setSlotTitle] = useState<string>('Lunch Tiffin Slot');
-  const [slotTimingText, setSlotTimingText] = useState<string>('8:00 AM – 11:00 AM  •  Delivery 1–2 PM');
+  const [allSlots, setAllSlots] = useState<any[]>([]);
+  const [nowTime, setNowTime] = useState<dayjs.Dayjs>(dayjs());
+  const [loading, setLoading] = useState<boolean>(true);
 
-  // Realtime Firestore subscription for active meal slot
+  // Register push token & sync fcm_token with Firestore user document
+  useEffect(() => {
+    if (!user?.phone) return;
+    const cleanPhone = user.phone.trim();
+    const userDocId = user.id || `usr_${cleanPhone.replace(/\D/g, '')}`;
+
+    try {
+      const { registerForPushNotificationsAsync } = require('../services/notificationService');
+      registerForPushNotificationsAsync().then((token: string | null) => {
+        if (token) {
+          const { doc, updateDoc } = require('firebase/firestore');
+          updateDoc(doc(firestore, 'users', userDocId), {
+            fcm_token: token,
+            last_push_sync: new Date().toISOString(),
+          }).catch(() => {});
+        }
+      });
+    } catch (e) {}
+  }, [user?.phone, user?.id]);
+
+  // Realtime subscription to logged-in user document for live wallet balance & block status
+  useEffect(() => {
+    if (!user?.phone) return;
+    const cleanPhone = user.phone.trim();
+    const userDocId = user.id || `usr_${cleanPhone.replace(/\D/g, '')}`;
+
+    try {
+      const { doc, onSnapshot } = require('firebase/firestore');
+      const unsub = onSnapshot(doc(firestore, 'users', userDocId), (docSnap: any) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          if (data.is_blocked) {
+            setUser(null);
+            Alert.alert(
+              'Account Suspended 🔒',
+              'Your account has been suspended by administration. Please contact support.'
+            );
+            navigation.replace('Auth');
+            return;
+          }
+          if (data.wallet_balance !== undefined && data.wallet_balance !== user.wallet_balance) {
+            setUser({ ...user, wallet_balance: data.wallet_balance, is_blocked: false });
+          }
+        }
+      });
+      return unsub;
+    } catch (e) {
+      console.log('Error listening to user document:', e);
+    }
+  }, [user?.phone, user?.id]);
+
+  const notificationSettings = useAppStore(state => state.notificationSettings);
+
+  // Setup native notification listeners & channel on mount
   useEffect(() => {
     try {
-      const q = query(collection(firestore, 'meal_slots'), where('active', '==', true));
+      const { setupNotificationChannel, initNotificationListeners } = require('../services/notificationService');
+      setupNotificationChannel();
+      const unsub = initNotificationListeners();
+      return unsub;
+    } catch (e) {}
+  }, []);
+
+  // Global Realtime Order Status Notification Listener for Logged-In User
+  const prevOrderStatusesRef = React.useRef<Record<string, string>>({});
+  const initialOrderLoadRef = React.useRef<boolean>(true);
+
+  useEffect(() => {
+    if (!user?.phone) return;
+    const userDigits = (user.phone || '').replace(/\D/g, '');
+    const userDocId = user.id || (userDigits ? `usr_${userDigits}` : '');
+
+    try {
+      const { collection, onSnapshot } = require('firebase/firestore');
+      const { triggerLocalNotification } = require('../services/notificationService');
+
+      const unsub = onSnapshot(collection(firestore, 'orders'), (snap: any) => {
+        if (!snap.empty) {
+          const userOrders = snap.docs
+            .map((d: any) => ({ id: d.id, ...d.data() }))
+            .filter((o: any) => {
+              const oDigits = (o.user_phone || '').replace(/\D/g, '');
+              const isPhoneMatch = userDigits && oDigits && (oDigits.endsWith(userDigits) || userDigits.endsWith(oDigits));
+              const isIdMatch = userDocId && (o.user_id === userDocId || o.user_id === user?.id);
+              return isPhoneMatch || isIdMatch;
+            });
+
+          userOrders.forEach((ord: any) => {
+            const prevStatus = prevOrderStatusesRef.current[ord.id];
+            const newStatus = ord.status;
+
+            if (prevStatus && prevStatus !== newStatus && !initialOrderLoadRef.current) {
+              let title = '';
+              let body = '';
+
+              if (newStatus === 'preparing') {
+                title = '👨‍🍳 Kitchen Preparing';
+                body = `Your meal "${ord.menu_title || 'Tiffin'}" is now being freshly prepared in our kitchen!`;
+              } else if (newStatus === 'out_for_delivery') {
+                title = '🚚 Out for Delivery';
+                body = `Your tiffin is on the way! Rider OTP Code: ${ord.otp_code || ''}`;
+              } else if (newStatus === 'delivered') {
+                title = '😋 Meal Delivered';
+                body = `Your tiffin meal "${ord.menu_title || ''}" has been delivered! Enjoy your hot meal.`;
+              }
+
+              if (title && body) {
+                // 1. Present Status Bar Notification Tray Banner (if order_updates enabled)
+                if (notificationSettings?.order_updates ?? true) {
+                  triggerLocalNotification(title, body, { orderId: ord.id });
+                }
+
+                // 2. Present In-App Alert Popup (if in_app_popups enabled)
+                if (notificationSettings?.in_app_popups ?? true) {
+                  Alert.alert(title, body, [
+                    {
+                      text: 'Track Order',
+                      onPress: () => navigation.navigate('OrderTracking', { orderId: ord.id }),
+                    },
+                    { text: 'OK' },
+                  ]);
+                }
+              }
+            }
+            prevOrderStatusesRef.current[ord.id] = newStatus;
+          });
+          initialOrderLoadRef.current = false;
+        }
+      });
+      return unsub;
+    } catch (e) {}
+  }, [user?.phone, user?.id, notificationSettings]);
+
+  // Global Realtime Push Broadcast Notification Listener
+  const lastBroadcastIdRef = React.useRef<string>('');
+  const initialBroadcastLoadRef = React.useRef<boolean>(true);
+
+  useEffect(() => {
+    try {
+      const { collection, onSnapshot } = require('firebase/firestore');
+      const { triggerLocalNotification } = require('../services/notificationService');
+
+      const unsub = onSnapshot(collection(firestore, 'broadcast_notifications'), (snap: any) => {
+        if (!snap.empty) {
+          const list = snap.docs
+            .map((d: any) => ({ id: d.id, ...d.data() }))
+            .sort((a: any, b: any) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+
+          const latestBroadcast = list[0];
+          if (latestBroadcast && latestBroadcast.id !== lastBroadcastIdRef.current) {
+            if (!initialBroadcastLoadRef.current) {
+              const bTitle = latestBroadcast.title || '📢 AFoodoo Announcement';
+              const bBody = latestBroadcast.body || '';
+
+              // 1. Present Status Bar Notification Tray Banner (if promo_alerts enabled)
+              if (notificationSettings?.promo_alerts ?? true) {
+                triggerLocalNotification(bTitle, bBody, { type: 'BROADCAST' });
+              }
+
+              // 2. Present In-App Alert Popup (if in_app_popups enabled)
+              if (notificationSettings?.in_app_popups ?? true) {
+                Alert.alert(bTitle, bBody);
+              }
+            }
+            lastBroadcastIdRef.current = latestBroadcast.id;
+          }
+          initialBroadcastLoadRef.current = false;
+        }
+      });
+      return unsub;
+    } catch (e) {}
+  }, [notificationSettings]);
+
+  // Realtime Firestore subscription + REST API fetcher for 100% real Firebase meal slots
+  useEffect(() => {
+    let isMounted = true;
+
+    // Direct REST API fetch on mount to guarantee immediate real data without SDK timeouts
+    fetchMealSlotsFromRest().then(restSlots => {
+      if (isMounted && restSlots.length > 0) {
+        setAllSlots(restSlots);
+        setActiveSlot(restSlots[0] as any);
+        setLoading(false);
+      }
+    });
+
+    try {
+      const q = collection(firestore, 'meal_slots');
       const unsub = onSnapshot(
         q,
         snap => {
-          if (!snap.empty) {
-            const docData = snap.docs[0].data() as DocumentData;
-            const slotObj = { id: snap.docs[0].id, ...docData };
-            setActiveSlot(slotObj as any);
-            setSlotTitle((slotObj as any).name || 'Lunch Tiffin');
-          } else {
-            // Fallback default active slot (Lunch 8-11 AM cutoff)
-            const fallbackSlot = {
-              id: 'slot_lunch_today',
-              name: 'Lunch Tiffin Special',
-              booking_open_time: new Date(),
-              booking_cutoff_time: new Date(Date.now() + 42 * 60000), // 42 mins remaining
-              delivery_start_time: new Date(Date.now() + 120 * 60000),
-              delivery_end_time: new Date(Date.now() + 180 * 60000),
-              active: true,
-            };
-            setActiveSlot(fallbackSlot as any);
+          if (isMounted && !snap.empty) {
+            const list = snap.docs
+              .map(d => ({ id: d.id, ...d.data() }))
+              .filter((d: any) => d.active ?? true);
+            if (list.length > 0) {
+              setAllSlots(list);
+              setActiveSlot(list[0] as any);
+            }
           }
+          if (isMounted) setLoading(false);
         },
         err => {
-          console.log('Firestore meal_slots info:', err.message);
-          // Set default fallback slot
-          const fallbackSlot = {
-            id: 'slot_lunch_today',
-            name: 'Lunch Tiffin Special',
-            booking_open_time: new Date(),
-            booking_cutoff_time: new Date(Date.now() + 42 * 60000),
-            delivery_start_time: new Date(Date.now() + 120 * 60000),
-            delivery_end_time: new Date(Date.now() + 180 * 60000),
-            active: true,
-          };
-          setActiveSlot(fallbackSlot as any);
+          console.log('Firestore listener info:', err.message);
+          if (isMounted) setLoading(false);
         }
       );
-      return unsub;
+      return () => {
+        isMounted = false;
+        unsub();
+      };
     } catch (e) {
-      console.log('Using default local meal slot state');
+      if (isMounted) setLoading(false);
     }
   }, []);
 
-  // Update countdown timer every second based on server cutoff time
+  // Timer interval to update current time every second for smooth countdowns
   useEffect(() => {
-    const updateTimer = () => {
-      if (!activeSlot || !activeSlot.booking_cutoff_time) {
-        setCountdown('42m 15s remaining');
-        setIsSlotOpen(true);
-        return;
+    const timer = setInterval(() => {
+      setNowTime(dayjs());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Helper to parse time strings like "10:30 PM" or Date objects into dayjs for today
+  const parseTimeToDayjs = (timeVal: any): dayjs.Dayjs | null => {
+    if (!timeVal) return null;
+    if (timeVal instanceof Date) return dayjs(timeVal);
+    if (timeVal?.toDate) return dayjs(timeVal.toDate());
+    if (typeof timeVal === 'string') {
+      const match = timeVal.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+      if (match) {
+        let hours = parseInt(match[1], 10);
+        const minutes = parseInt(match[2], 10);
+        const ampm = match[3].toUpperCase();
+        if (ampm === 'PM' && hours < 12) hours += 12;
+        if (ampm === 'AM' && hours === 12) hours = 0;
+        return dayjs().set('hour', hours).set('minute', minutes).set('second', 0);
       }
-      const cutoffDate = activeSlot.booking_cutoff_time.toDate
-        ? activeSlot.booking_cutoff_time.toDate()
-        : new Date(activeSlot.booking_cutoff_time);
-
-      const now = dayjs();
-      const diffMs = cutoffDate.getTime() - now.valueOf();
-
-      if (diffMs > 0) {
-        const mins = Math.floor(diffMs / 60000);
-        const secs = Math.floor((diffMs % 60000) / 1000);
-        setCountdown(`${mins}m ${secs < 10 ? '0' : ''}${secs}s`);
-        setIsSlotOpen(true);
-      } else {
-        setCountdown('Booking Window Closed');
-        setIsSlotOpen(false);
-      }
-    };
-
-    updateTimer();
-    const interval = setInterval(updateTimer, 1000);
-    return () => clearInterval(interval);
-  }, [activeSlot]);
-
-  if (!user) {
-    navigation.replace('Auth');
+    }
     return null;
-  }
-
-  const activeSub = subscriptions && subscriptions.length > 0 ? subscriptions[0] : null;
+  };
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="dark-content" />
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={theme.background} />
       <ScrollView contentContainerStyle={styles.container}>
-        {/* Header User Greeting */}
-        <View style={styles.header}>
-          <View>
-            <Text style={styles.greetingText}>Welcome back,</Text>
-            <Text style={styles.userNameText}>{user.name || 'Food Lover'}</Text>
-          </View>
+        {/* User Profile Header */}
+        <View style={styles.userBar}>
+          <TouchableOpacity onPress={() => navigation.navigate('Profile')} style={styles.userInfoRow}>
+            <View style={[styles.avatarCircle, { backgroundColor: theme.primary }]}>
+              <Text style={styles.avatarText}>{user?.name?.charAt(0) || 'A'}</Text>
+            </View>
+            <View>
+              <Text style={[styles.greetingText, { color: theme.textSecondary }]}>Welcome Back 👋</Text>
+              <Text style={[styles.userName, { color: theme.textPrimary }]}>{user?.name || 'AFoodoo Customer'}</Text>
+            </View>
+          </TouchableOpacity>
+
           <TouchableOpacity
-            style={styles.walletBadge}
             onPress={() => navigation.navigate('Wallet')}
+            style={[styles.walletBadge, { backgroundColor: theme.surface, borderColor: theme.accentBadgeBg }]}
           >
-            <Text style={styles.walletBadgeIcon}>💳</Text>
-            <Text style={styles.walletBadgeText}>${user.wallet_balance ?? 500}</Text>
+            <Text style={styles.walletEmoji}>👛</Text>
+            <Text style={[styles.walletText, { color: theme.primary }]}>
+              ₹{(user?.wallet_balance || 500).toFixed(0)}
+            </Text>
           </TouchableOpacity>
         </View>
 
-        {/* Address Banner */}
-        <TouchableOpacity style={styles.addressBar} onPress={() => navigation.navigate('Profile')}>
-          <Text style={styles.addressIcon}>📍</Text>
-          <Text style={styles.addressText} numberOfLines={1}>
-            {user.addresses && user.addresses.length > 0
-              ? user.addresses[0].line1
-              : 'Set Delivery Address'}
+        {/* Delivery Address Pin */}
+        <View style={[styles.addressBar, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}>
+          <Text style={styles.addressPin}>📍</Text>
+          <Text style={[styles.addressText, { color: theme.textSecondary }]} numberOfLines={1}>
+            {user?.addresses?.[0]?.line1 || 'Flat 402, Green Park Residency, Sector 15'}
           </Text>
-          <Text style={styles.addressArrow}>›</Text>
-        </TouchableOpacity>
-
-        {/* Live Booking Window Banner */}
-        <View style={[styles.windowBannerCard, !isSlotOpen && styles.windowBannerClosed]}>
-          <View style={styles.slotHeaderRow}>
-            <View style={styles.slotTitleGroup}>
-              <Text style={styles.liveIndicator}>● LIVE BOOKING WINDOW</Text>
-              <Text style={styles.slotTitle}>{activeSlot?.name || slotTitle}</Text>
-            </View>
-            <View style={[styles.statusBadge, !isSlotOpen && styles.statusBadgeClosed]}>
-              <Text style={styles.statusBadgeText}>{isSlotOpen ? 'OPEN' : 'CLOSED'}</Text>
-            </View>
-          </View>
-
-          <Text style={styles.timingText}>{slotTimingText}</Text>
-
-          {/* Countdown Clock */}
-          <View style={styles.timerContainer}>
-            <Text style={styles.timerLabel}>
-              {isSlotOpen ? 'Booking Closes In' : 'Next Window Opens at 5:00 PM (Dinner)'}
-            </Text>
-            {isSlotOpen ? (
-              <Text style={styles.timerClock}>⏳ {countdown}</Text>
-            ) : (
-              <Text style={styles.timerClockClosed}>🔒 Cutoff Passed</Text>
-            )}
-          </View>
-
-          <TouchableOpacity
-            style={[styles.menuButton, !isSlotOpen && styles.menuButtonDisabled]}
-            onPress={() => navigation.navigate('Menu')}
-          >
-            <Text style={styles.menuButtonText}>
-              {isSlotOpen ? "View Today's Menu 🍲" : 'View Upcoming Menu'}
-            </Text>
-          </TouchableOpacity>
         </View>
 
-        {/* Active Subscription Pack Card */}
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Your Active Subscription</Text>
-          <TouchableOpacity onPress={() => navigation.navigate('Subscription')}>
-            <Text style={styles.sectionAction}>Manage ›</Text>
-          </TouchableOpacity>
-        </View>
-
-        {activeSub ? (
-          <View style={styles.subCard}>
-            <View style={styles.subRow}>
-              <View style={styles.subIconBadge}>
-                <Text style={styles.subIcon}>📅</Text>
-              </View>
-              <View style={styles.subInfo}>
-                <Text style={styles.subTitle}>{activeSub.plan_type}</Text>
-                <Text style={styles.subMeta}>Auto-Renew: {activeSub.auto_renew ? 'ON' : 'OFF'}</Text>
-              </View>
-              <View style={styles.mealsPill}>
-                <Text style={styles.mealsPillCount}>{activeSub.meals_remaining}</Text>
-                <Text style={styles.mealsPillLabel}>Meals Left</Text>
-              </View>
-            </View>
-
-            <TouchableOpacity
-              style={styles.skipButton}
-              onPress={() => navigation.navigate('Subscription')}
-            >
-              <Text style={styles.skipButtonText}>Pause / Skip Tomorrow's Meal ⏸️</Text>
-            </TouchableOpacity>
-          </View>
+        {/* Cutoff Window Countdown Cards — Renders ALL active meal slots */}
+        {loading ? (
+          <SkeletonCard count={1} />
         ) : (
-          <TouchableOpacity
-            style={styles.noSubCard}
-            onPress={() => navigation.navigate('Subscription')}
-          >
-            <Text style={styles.noSubEmoji}>✨</Text>
-            <Text style={styles.noSubTitle}>Save with a Monthly Tiffin Pack</Text>
-            <Text style={styles.noSubText}>Get 10 or 20 meal packs with priority delivery.</Text>
-            <Text style={styles.noSubLink}>Explore Plans & Pass →</Text>
-          </TouchableOpacity>
+          allSlots.map((slotItem: any) => {
+            const openStr = slotItem.booking_open_time || '08:00 AM';
+            const cutoffStr = slotItem.booking_cutoff_time || '11:00 AM';
+            const delStart = slotItem.delivery_start_time || '01:00 PM';
+            const delEnd = slotItem.delivery_end_time || '02:00 PM';
+            const timingText = `Book ${openStr} – ${cutoffStr}  •  Delivered ${delStart}–${delEnd}`;
+
+            const cutoffDayjs = parseTimeToDayjs(cutoffStr);
+            let slotOpen = true;
+            let countdownStr = '41m 49s';
+
+            if (cutoffDayjs) {
+              const diffMs = cutoffDayjs.diff(nowTime);
+              if (diffMs > 0) {
+                const mins = Math.floor(diffMs / 60000);
+                const secs = Math.floor((diffMs % 60000) / 1000);
+                countdownStr = `${mins}m ${secs < 10 ? '0' : ''}${secs}s`;
+                slotOpen = true;
+              } else {
+                countdownStr = 'Cutoff Passed';
+                slotOpen = false;
+              }
+            }
+
+            return (
+              <View
+                key={slotItem.id}
+                style={[
+                  styles.windowCard,
+                  {
+                    backgroundColor: theme.surface,
+                    borderTopColor: theme.surfaceBorder,
+                    borderRightColor: theme.surfaceBorder,
+                    borderBottomColor: theme.surfaceBorder,
+                    borderLeftColor: theme.primary,
+                    borderLeftWidth: 5,
+                    borderTopWidth: 1,
+                    borderRightWidth: 1,
+                    borderBottomWidth: 1,
+                  },
+                ]}
+              >
+                {/* Header Row: Live Indicator + Open/Closed Pill Badge */}
+                <View style={styles.windowHeaderRow}>
+                  <View style={styles.liveIndicatorRow}>
+                    <View style={[styles.liveDot, { backgroundColor: theme.primary }]} />
+                    <Text style={[styles.liveIndicatorText, { color: theme.primary }]}>
+                      LIVE BOOKING WINDOW
+                    </Text>
+                  </View>
+                  <View
+                    style={[
+                      styles.statusBadgePill,
+                      { backgroundColor: slotOpen ? '#E8F5E9' : '#FFEBEE' },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.statusBadgeText,
+                        { color: slotOpen ? '#2E7D32' : '#C62828' },
+                      ]}
+                    >
+                      {slotOpen ? 'OPEN' : 'CLOSED'}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Slot Title */}
+                <Text style={[styles.slotTitleText, { color: theme.textPrimary }]}>
+                  {slotItem.name || 'Meal Tiffin Slot'}
+                </Text>
+
+                {/* Timing text on its own dedicated line under title to prevent overflow */}
+                <Text style={[styles.slotTimingText, { color: theme.textSecondary }]}>
+                  {timingText}
+                </Text>
+
+                {/* Inner Timer Container */}
+                <View
+                  style={[
+                    styles.timerBox,
+                    {
+                      backgroundColor: isDark ? 'rgba(255,255,255,0.05)' : '#FFF9F5',
+                      borderColor: theme.accentBadgeBg,
+                    },
+                  ]}
+                >
+                  <Text style={[styles.timerLabel, { color: theme.textMuted }]}>Booking Closes In</Text>
+                  <View style={styles.timerRow}>
+                    <Text style={styles.timerEmoji}>⌛</Text>
+                    <Text style={[styles.timerValue, { color: theme.primary }]}>
+                      {countdownStr}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Action Button */}
+                <TouchableOpacity
+                  style={[
+                    styles.primaryButton,
+                    { backgroundColor: slotOpen ? theme.primary : theme.disabledBg },
+                  ]}
+                  onPress={() => {
+                    setActiveSlot(slotItem);
+                    navigation.navigate('Menu');
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.primaryButtonText,
+                      { color: slotOpen ? theme.buttonText : theme.disabledText },
+                    ]}
+                  >
+                    {slotOpen ? "View Today's Menu 🍲" : 'Window Closed - View Menu'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            );
+          })
         )}
 
-        {/* Navigation Grid Shortcuts */}
-        <Text style={[styles.sectionTitle, { marginTop: 24, marginBottom: 12 }]}>Explore AFoodoo</Text>
-        <View style={styles.gridContainer}>
+        {/* Active Subscription Banner */}
+        <View style={styles.sectionHeader}>
+          <Text style={[styles.sectionTitle, { color: theme.textPrimary }]}>Active Subscriptions</Text>
+          <TouchableOpacity onPress={() => navigation.navigate('Subscription')}>
+            <Text style={[styles.seeAllText, { color: theme.primary }]}>Manage All</Text>
+          </TouchableOpacity>
+        </View>
+
+        {subscriptions.length > 0 ? (
+          subscriptions.map((sub: any) => (
+            <TouchableOpacity
+              key={sub.id}
+              style={[styles.subCard, { backgroundColor: theme.surface, borderColor: theme.accentBadgeBg }]}
+              onPress={() => navigation.navigate('Subscription')}
+            >
+              <View style={styles.subHeader}>
+                <Text style={[styles.subTitle, { color: theme.textPrimary }]}>{sub.plan_type}</Text>
+                <View style={[styles.activeTag, { backgroundColor: theme.statusSuccessBg }]}>
+                  <Text style={[styles.activeTagText, { color: theme.statusSuccessText }]}>ACTIVE</Text>
+                </View>
+              </View>
+              <Text style={[styles.subDetail, { color: theme.textSecondary }]}>
+                {sub.meals_remaining} Meals Remaining • Auto-Dispatched
+              </Text>
+            </TouchableOpacity>
+          ))
+        ) : (
+          <View style={[styles.noSubCard, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}>
+            <Text style={[styles.noSubTitle, { color: theme.textPrimary }]}>No Active Meal Subscription</Text>
+            <Text style={[styles.noSubDesc, { color: theme.textSecondary }]}>
+              Save 15% on daily meals by subscribing to a 7-day tiffin plan.
+            </Text>
+            <TouchableOpacity
+              style={[styles.subLinkButton, { backgroundColor: theme.primaryLight, borderColor: theme.accentBadgeBg }]}
+              onPress={() => navigation.navigate('Subscription')}
+            >
+              <Text style={[styles.subLinkText, { color: theme.primary }]}>Explore Meal Plans ⭐</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Quick Action 2x2 Grid */}
+        <Text style={[styles.sectionTitle, { color: theme.textPrimary, marginTop: 24, marginBottom: 12 }]}>
+          Explore AFoodoo
+        </Text>
+        <View style={styles.gridRow}>
           <TouchableOpacity
-            style={styles.gridItem}
+            style={[styles.gridCard, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}
             onPress={() => navigation.navigate('Menu')}
           >
             <Text style={styles.gridEmoji}>🍱</Text>
-            <Text style={styles.gridTitle}>Browse Menu</Text>
-            <Text style={styles.gridSub}>Fresh daily items</Text>
+            <Text style={[styles.gridTitle, { color: theme.textPrimary }]}>Browse Menu</Text>
+            <Text style={[styles.gridSub, { color: theme.textMuted }]}>Fresh daily items</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={styles.gridItem}
-            onPress={() => navigation.navigate('OrderTracking', { orderId: 'demo-order-123' })}
+            style={[styles.gridCard, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}
+            onPress={() => navigation.navigate('OrderTracking', { orderId: 'ord_849201' })}
           >
             <Text style={styles.gridEmoji}>🚴</Text>
-            <Text style={styles.gridTitle}>Track Order</Text>
-            <Text style={styles.gridSub}>Live status stepper</Text>
+            <Text style={[styles.gridTitle, { color: theme.textPrimary }]}>Track Order</Text>
+            <Text style={[styles.gridSub, { color: theme.textMuted }]}>Live status stepper</Text>
           </TouchableOpacity>
+        </View>
 
+        <View style={[styles.gridRow, { marginTop: 12 }]}>
           <TouchableOpacity
-            style={styles.gridItem}
+            style={[styles.gridCard, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}
             onPress={() => navigation.navigate('Wallet')}
           >
             <Text style={styles.gridEmoji}>👛</Text>
-            <Text style={styles.gridTitle}>AFoodoo Wallet</Text>
-            <Text style={styles.gridSub}>Fast 1-tap checkout</Text>
+            <Text style={[styles.gridTitle, { color: theme.textPrimary }]}>Top-Up Wallet</Text>
+            <Text style={[styles.gridSub, { color: theme.textMuted }]}>Instant credit</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={styles.gridItem}
+            style={[styles.gridCard, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}
             onPress={() => navigation.navigate('Profile')}
           >
             <Text style={styles.gridEmoji}>👤</Text>
-            <Text style={styles.gridTitle}>Profile & Help</Text>
-            <Text style={styles.gridSub}>Addresses & History</Text>
+            <Text style={[styles.gridTitle, { color: theme.textPrimary }]}>Account</Text>
+            <Text style={[styles.gridSub, { color: theme.textMuted }]}>Addresses & Info</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
@@ -263,91 +522,149 @@ export default function HomeScreen({ navigation }: any) {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#FAF7F2' },
-  container: { padding: 20 },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
-  greetingText: { fontSize: 13, color: '#757575', fontWeight: '500' },
-  userNameText: { fontSize: 22, fontWeight: '800', color: '#2C2C2C' },
+  safeArea: { flex: 1 },
+  container: { paddingHorizontal: 20, paddingVertical: 16 },
+  userBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  userInfoRow: { flexDirection: 'row', alignItems: 'center', minHeight: 44 },
+  avatarCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  avatarText: { color: '#FFF', fontSize: 18, fontWeight: '800' },
+  greetingText: { fontSize: 12, fontWeight: '500' },
+  userName: { fontSize: 16, fontWeight: '800' },
   walletBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFF3E0',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
     borderWidth: 1,
-    borderColor: '#FFE0B2',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    minHeight: 44,
   },
-  walletBadgeIcon: { fontSize: 14, marginRight: 4 },
-  walletBadgeText: { fontSize: 14, fontWeight: '700', color: '#E65100' },
+  walletEmoji: { fontSize: 14, marginRight: 4 },
+  walletText: { fontSize: 14, fontWeight: '800' },
   addressBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
     paddingHorizontal: 14,
     paddingVertical: 10,
     borderRadius: 12,
     marginBottom: 20,
     borderWidth: 1,
-    borderColor: '#EEEEEE',
+    minHeight: 44,
   },
-  addressIcon: { fontSize: 14, marginRight: 8 },
-  addressText: { flex: 1, fontSize: 13, color: '#424242', fontWeight: '500' },
-  addressArrow: { fontSize: 18, color: '#9E9E9E', fontWeight: '600' },
-  windowBannerCard: {
-    backgroundColor: '#FFFFFF',
+  addressPin: { marginRight: 6 },
+  addressText: { fontSize: 13, flex: 1 },
+  windowCard: {
     borderRadius: 20,
     padding: 20,
     marginBottom: 24,
-    shadowColor: '#D84315',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 12,
-    elevation: 4,
+    borderWidth: 1,
     borderLeftWidth: 5,
-    borderLeftColor: '#D84315',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 3,
   },
-  windowBannerClosed: {
-    borderLeftColor: '#9E9E9E',
+  windowHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
   },
-  slotHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  slotTitleGroup: { flex: 1 },
-  liveIndicator: { fontSize: 11, fontWeight: '800', color: '#D84315', letterSpacing: 0.5, marginBottom: 2 },
-  slotTitle: { fontSize: 20, fontWeight: '800', color: '#2C2C2C' },
-  statusBadge: { backgroundColor: '#E8F5E9', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
-  statusBadgeClosed: { backgroundColor: '#FFEBEE' },
-  statusBadgeText: { fontSize: 11, fontWeight: '800', color: '#2E7D32' },
-  timingText: { fontSize: 13, color: '#616161', marginTop: 4, marginBottom: 16 },
-  timerContainer: { backgroundColor: '#FAF7F2', padding: 14, borderRadius: 12, alignItems: 'center', marginBottom: 16 },
-  timerLabel: { fontSize: 12, color: '#757575', fontWeight: '600', marginBottom: 4 },
-  timerClock: { fontSize: 22, fontWeight: '800', color: '#D84315' },
-  timerClockClosed: { fontSize: 18, fontWeight: '700', color: '#757575' },
-  menuButton: { backgroundColor: '#D84315', paddingVertical: 14, borderRadius: 12, alignItems: 'center' },
-  menuButtonDisabled: { backgroundColor: '#9E9E9E' },
-  menuButtonText: { color: '#FFF', fontSize: 15, fontWeight: '700' },
+  liveIndicatorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  liveDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    marginRight: 6,
+  },
+  liveIndicatorText: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  statusBadgePill: {
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 12,
+  },
+  statusBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  slotTitleText: {
+    fontSize: 21,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  slotTimingText: {
+    fontSize: 13,
+    fontWeight: '500',
+    marginBottom: 16,
+  },
+  timerBox: {
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    marginBottom: 16,
+    borderWidth: 1,
+  },
+  timerLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  timerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  timerEmoji: {
+    fontSize: 20,
+    marginRight: 6,
+  },
+  timerValue: {
+    fontSize: 26,
+    fontWeight: '800',
+  },
+  primaryButton: {
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+    minHeight: 48,
+    justifyContent: 'center',
+  },
+  primaryButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  sectionTitle: { fontSize: 18, fontWeight: '700', color: '#2C2C2C' },
-  sectionAction: { fontSize: 13, fontWeight: '600', color: '#D84315' },
-  subCard: { backgroundColor: '#FFF', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#EEEEEE' },
-  subRow: { flexDirection: 'row', alignItems: 'center' },
-  subIconBadge: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#FFF3E0', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
-  subIcon: { fontSize: 22 },
-  subInfo: { flex: 1 },
-  subTitle: { fontSize: 15, fontWeight: '700', color: '#2C2C2C' },
-  subMeta: { fontSize: 12, color: '#757575', marginTop: 2 },
-  mealsPill: { alignItems: 'center', backgroundColor: '#E65100', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12 },
-  mealsPillCount: { fontSize: 16, fontWeight: '800', color: '#FFF' },
-  mealsPillLabel: { fontSize: 9, fontWeight: '700', color: '#FFE0B2' },
-  skipButton: { marginTop: 14, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#F5F5F5', alignItems: 'center' },
-  skipButtonText: { fontSize: 13, fontWeight: '600', color: '#D84315' },
-  noSubCard: { backgroundColor: '#FFF8F0', borderRadius: 16, padding: 20, borderWidth: 1, borderColor: '#FFE0B2', alignItems: 'center' },
-  noSubEmoji: { fontSize: 32, marginBottom: 8 },
-  noSubTitle: { fontSize: 16, fontWeight: '700', color: '#E65100', marginBottom: 4 },
-  noSubText: { fontSize: 13, color: '#6D4C41', textAlign: 'center', marginBottom: 12 },
-  noSubLink: { fontSize: 14, fontWeight: '700', color: '#D84315' },
-  gridContainer: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
-  gridItem: { width: '48%', backgroundColor: '#FFF', borderRadius: 16, padding: 16, marginBottom: 14, borderWidth: 1, borderColor: '#EEEEEE' },
-  gridEmoji: { fontSize: 28, marginBottom: 8 },
-  gridTitle: { fontSize: 14, fontWeight: '700', color: '#2C2C2C' },
-  gridSub: { fontSize: 11, color: '#757575', marginTop: 2 },
+  sectionTitle: { fontSize: 18, fontWeight: '800' },
+  seeAllText: { fontSize: 13, fontWeight: '700' },
+  subCard: { borderRadius: 16, padding: 16, borderWidth: 1, marginBottom: 10 },
+  subHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  subTitle: { fontSize: 15, fontWeight: '700' },
+  activeTag: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 },
+  activeTagText: { fontSize: 10, fontWeight: '800' },
+  subDetail: { fontSize: 13, marginTop: 4 },
+  noSubCard: { borderRadius: 16, padding: 16, borderWidth: 1, alignItems: 'center' },
+  noSubTitle: { fontSize: 15, fontWeight: '700', marginBottom: 4 },
+  noSubDesc: { fontSize: 12, textAlign: 'center', marginBottom: 12 },
+  subLinkButton: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 10, borderWidth: 1 },
+  subLinkText: { fontSize: 13, fontWeight: '700' },
+  gridRow: { flexDirection: 'row', gap: 12 },
+  gridCard: { flex: 1, borderRadius: 16, padding: 16, borderWidth: 1 },
+  gridEmoji: { fontSize: 24, marginBottom: 8 },
+  gridTitle: { fontSize: 14, fontWeight: '700' },
+  gridSub: { fontSize: 11, marginTop: 2 },
 });

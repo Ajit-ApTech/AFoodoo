@@ -12,6 +12,8 @@ import mealSlotRoutes from './routes/mealSlots';
 import menuItemRoutes from './routes/menuItems';
 import orderRoutes from './routes/orders';
 import subscriptionRoutes from './routes/subscriptions';
+import walletRoutes from './routes/wallet';
+import adminRoutes from './routes/admin';
 
 dotenv.config();
 
@@ -75,6 +77,8 @@ app.use('/api/meal-slots', mealSlotRoutes);
 app.use('/api/menu-items', menuItemRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/subscriptions', subscriptionRoutes);
+app.use('/api/wallet', walletRoutes);
+app.use('/api/admin', adminRoutes);
 
 // Global Error Handler
 app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {

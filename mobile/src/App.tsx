@@ -1,7 +1,11 @@
-import React from 'react';
-import { NavigationContainer } from '@react-navigation/native';
+import React, { useEffect } from 'react';
+import { NavigationContainer, DefaultTheme, DarkTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
+import { navigationRef } from './services/navigationRef';
+import { registerForPushNotificationsAsync, initNotificationListeners } from './services/notificationService';
+import { ThemeProvider, useTheme } from './theme/ThemeContext';
+import { useAppStore } from './store/appStore';
 import AuthScreen from './screens/AuthScreen';
 import HomeScreen from './screens/HomeScreen';
 import MenuScreen from './screens/MenuScreen';
@@ -24,16 +28,52 @@ export type RootStackParamList = {
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
-export default function App() {
+function MainNavigator() {
+  const { theme, isDark } = useTheme();
+  // Zustand with AsyncStorage persistence keeps the user logged in across restarts
+  const user = useAppStore(state => state.user);
+
+  useEffect(() => {
+    // Register device for push notifications
+    registerForPushNotificationsAsync();
+    // Initialize real-time push notification listeners
+    const unsubscribePush = initNotificationListeners();
+    return () => {
+      if (unsubscribePush) unsubscribePush();
+    };
+  }, []);
+
+  const navTheme = isDark
+    ? {
+        ...DarkTheme,
+        colors: {
+          ...DarkTheme.colors,
+          background: theme.background,
+          card: theme.surface,
+          text: theme.textPrimary,
+          border: theme.surfaceBorder,
+        },
+      }
+    : {
+        ...DefaultTheme,
+        colors: {
+          ...DefaultTheme.colors,
+          background: theme.background,
+          card: theme.surface,
+          text: theme.textPrimary,
+          border: theme.surfaceBorder,
+        },
+      };
+
   return (
-    <NavigationContainer>
-      <StatusBar style="dark" />
+    <NavigationContainer ref={navigationRef} theme={navTheme}>
+      <StatusBar style={isDark ? 'light' : 'dark'} />
       <Stack.Navigator
-        initialRouteName="Auth"
+        initialRouteName={user ? 'Home' : 'Auth'}
         screenOptions={{
-          headerStyle: { backgroundColor: '#FAF7F2' },
-          headerTintColor: '#D84315',
-          headerTitleStyle: { fontWeight: '700', color: '#2C2C2C' },
+          headerStyle: { backgroundColor: theme.background },
+          headerTintColor: theme.primary,
+          headerTitleStyle: { fontWeight: '700', color: theme.textPrimary },
           headerShadowVisible: false,
           headerBackTitleVisible: false,
         }}
@@ -48,5 +88,13 @@ export default function App() {
         <Stack.Screen name="Profile" component={ProfileScreen} options={{ title: 'Account Settings' }} />
       </Stack.Navigator>
     </NavigationContainer>
+  );
+}
+
+export default function App() {
+  return (
+    <ThemeProvider>
+      <MainNavigator />
+    </ThemeProvider>
   );
 }

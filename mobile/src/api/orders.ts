@@ -1,5 +1,17 @@
-import { auth } from '../firebaseConfig';
 import { API_BASE_URL } from './config';
+
+function getLazyAuthToken(): Promise<string> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { getAuth } = require('firebase/auth');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { app } = require('../firebaseConfig');
+    const currentUser = getAuth(app).currentUser;
+    return currentUser ? currentUser.getIdToken() : Promise.resolve('');
+  } catch {
+    return Promise.resolve('');
+  }
+}
 
 /**
  * Places a new order via the backend API.
@@ -11,7 +23,7 @@ export async function placeOrder({ userId, menuItemId, slotId, address }: {
   slotId: string;
   address: any;
 }) {
-  const token = await (auth.currentUser?.getIdToken() ?? Promise.resolve(''));
+  const token = await getLazyAuthToken();
   const resp = await fetch(`${API_BASE_URL}/orders`, {
     method: 'POST',
     headers: {
@@ -38,7 +50,7 @@ export async function placeOrder({ userId, menuItemId, slotId, address }: {
  * `status` should be one of 'paid', 'pending', 'failed'.
  */
 export async function payOrder(orderId: string, status: 'paid' | 'pending' | 'failed'): Promise<any> {
-  const token = await (auth.currentUser?.getIdToken() ?? Promise.resolve(''));
+  const token = await getLazyAuthToken();
   const resp = await fetch(`${API_BASE_URL}/orders/${orderId}/pay`, {
     method: 'POST',
     headers: {

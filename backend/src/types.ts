@@ -7,6 +7,8 @@ export interface User {
   addresses: Address[];
   wallet_balance: number;
   subscription_ids: string[];
+  role?: 'super_admin' | 'kitchen_staff' | 'delivery_manager' | 'customer';
+  is_blocked?: boolean;
   created_at: FirebaseFirestore.Timestamp;
 }
 
@@ -61,24 +63,29 @@ export interface Order {
   delivery_address: Address;
   payment_status: string; // e.g., 'paid', 'pending', 'failed'
   otp_code?: string;
+  delivery_zone_id?: string;
+  tiffin_returned?: boolean;
   created_at: FirebaseFirestore.Timestamp;
 }
 
 export interface Subscription {
   id: string;
   user_id: string;
-  plan_type: string; // e.g., '10_lunches'
+  plan_type: string; // e.g., 'Lunch Weekly'
   meals_remaining: number;
   start_date: FirebaseFirestore.Timestamp;
   end_date: FirebaseFirestore.Timestamp;
   auto_renew: boolean;
+  is_paused?: boolean;
+  paused_dates?: string[];
 }
 
 export interface Transaction {
   id: string;
   user_id: string;
   amount: number;
-  type: 'topup' | 'debit' | 'refund';
+  type: 'topup' | 'debit' | 'refund' | 'plan_credit';
+  title?: string;
   timestamp: FirebaseFirestore.Timestamp;
 }
 
@@ -87,4 +94,21 @@ export interface DeliveryZone {
   name: string;
   polygon_coordinates: number[][]; // array of [lat, lng]
   assigned_rider_id?: string;
+}
+
+export interface AuditLog {
+  id: string;
+  admin_id: string;
+  admin_name: string;
+  action_type:
+    | 'wallet_adjust'
+    | 'user_block'
+    | 'cutoff_change'
+    | 'menu_edit'
+    | 'subscription_override'
+    | 'push_broadcast';
+  details: string;
+  target_id?: string;
+  ip_address?: string;
+  timestamp: FirebaseFirestore.Timestamp;
 }

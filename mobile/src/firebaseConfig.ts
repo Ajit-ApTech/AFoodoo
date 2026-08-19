@@ -1,38 +1,28 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { initializeFirestore, getFirestore, CACHE_SIZE_UNLIMITED } from 'firebase/firestore';
 
 const firebaseConfig = {
-  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY ?? 'YOUR_API_KEY',
-  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN ?? 'YOUR_PROJECT_ID.firebaseapp.com',
-  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID ?? 'YOUR_PROJECT_ID',
-  storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET ?? 'YOUR_PROJECT_ID.appspot.com',
-  messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID ?? 'YOUR_SENDER_ID',
-  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID ?? 'YOUR_APP_ID',
+  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY || 'AIzaSyC57TfyLD_-0PqJa1_rLiX49sSIMJ3XNI4',
+  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN || 'afoodoo.firebaseapp.com',
+  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID || 'afoodoo',
+  storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET || 'afoodoo.firebasestorage.app',
+  messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || '897988707530',
+  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID || '1:897988707530:web:187e1980f9cb7876266033',
 };
 
-export const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+// Initialize Firebase App once
+const isFirstInit = !getApps().length;
+export const app = isFirstInit ? initializeApp(firebaseConfig) : getApp();
 
-export const auth = new Proxy({ currentUser: null } as any, {
-  get(target, prop) {
-    try {
-      const instance = getAuth(app);
-      const val = (instance as any)[prop];
-      return typeof val === 'function' ? val.bind(instance) : val;
-    } catch (e) {
-      return (target as any)[prop];
-    }
-  }
-});
+// Firestore with Force Long-Polling for Android emulator compatibility
+export const firestore = isFirstInit
+  ? initializeFirestore(app, {
+      experimentalForceLongPolling: true,
+      cacheSizeBytes: CACHE_SIZE_UNLIMITED,
+    })
+  : getFirestore(app);
 
-export const firestore = new Proxy({} as any, {
-  get(target, prop) {
-    try {
-      const instance = getFirestore(app);
-      const val = (instance as any)[prop];
-      return typeof val === 'function' ? val.bind(instance) : val;
-    } catch (e) {
-      return (target as any)[prop];
-    }
-  }
-});
+// NOTE: Firebase Auth is NOT initialized here.
+// Auth is initialized lazily inside AuthScreen.tsx to avoid
+// the "Component auth has not been registered yet" error that occurs
+// when auth SDK loads before Firebase app is fully ready.

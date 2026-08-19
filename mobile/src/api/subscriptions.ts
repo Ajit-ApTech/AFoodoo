@@ -1,9 +1,17 @@
-import { auth } from '../firebaseConfig';
 import { Subscription } from '../types';
 import { API_BASE_URL } from './config';
 
 async function getAuthToken(): Promise<string> {
-  return await (auth.currentUser?.getIdToken() ?? Promise.resolve(''));
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { getAuth } = require('firebase/auth');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { app } = require('../firebaseConfig');
+    const currentUser = getAuth(app).currentUser;
+    return currentUser ? currentUser.getIdToken() : Promise.resolve('');
+  } catch {
+    return '';
+  }
 }
 
 /** Fetch all subscriptions for a given user */
@@ -22,17 +30,8 @@ export async function fetchSubscriptions(userId: string): Promise<Subscription[]
     return data as Subscription[];
   } catch (e) {
     console.log('Using default local subscriptions for user:', userId);
-    return [
-      {
-        id: 'sub-demo-1',
-        user_id: userId,
-        plan_type: 'Monthly Lunch Pack (20 Meals)',
-        meals_remaining: 14,
-        start_date: new Date().toISOString(),
-        end_date: new Date(Date.now() + 20 * 86400000).toISOString(),
-        auto_renew: true,
-      },
-    ];
+    // Return empty so local store state is preserved — don't inject fake data
+    return [];
   }
 }
 

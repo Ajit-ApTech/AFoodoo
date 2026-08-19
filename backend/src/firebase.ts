@@ -26,12 +26,15 @@ if (!admin.apps.length) {
     });
   } else {
     admin.initializeApp({
-      projectId: process.env.GCP_PROJECT || 'afoodoo-dev-app',
+      projectId: process.env.GCP_PROJECT || 'afoodoo',
     });
   }
 }
 
 export const firestore = admin.firestore();
+export const db = firestore;
 export const auth = admin.auth();
+export const adminAuth = auth;
 export const fcm = admin.messaging();
+export const messaging = fcm;
 export const firebaseApp = admin.app();

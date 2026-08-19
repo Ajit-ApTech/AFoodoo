@@ -1,3 +1,10 @@
+export interface NotificationSettings {
+  cutoff_alerts: boolean;
+  order_updates: boolean;
+  promo_alerts: boolean;
+  in_app_popups: boolean;
+}
+
 export interface User {
   id: string;
   name: string;
@@ -6,6 +13,8 @@ export interface User {
   wallet_balance: number;
   subscription_ids: string[];
   created_at: string;
+  is_blocked?: boolean;
+  notification_settings?: NotificationSettings;
 }
 
 export interface Address {
@@ -41,6 +50,7 @@ export interface MenuItem {
   is_available?: boolean;
   max_quantity?: number;
   quantity_booked?: number;
+  [key: string]: any;
 }
 
 export interface Order {
