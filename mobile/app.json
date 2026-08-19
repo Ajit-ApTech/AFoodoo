@@ -28,6 +28,9 @@
       "package": "com.anonymous.afoodoo",
       "permissions": ["ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION"]
     },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
     "plugins": [
       [
         "expo-location",
@@ -35,12 +38,7 @@
           "locationWhenInUsePermission": "Allow AFoodoo to use your location to auto-fill your delivery address.",
           "locationAlwaysAndWhenInUsePermission": "Allow AFoodoo to use your location for delivery address auto-fill."
         }
-      ]
-    ],
-    "web": {
-      "favicon": "./assets/favicon.png"
-    },
-    "plugins": [
+      ],
       "expo-asset",
       "expo-font"
     ]
