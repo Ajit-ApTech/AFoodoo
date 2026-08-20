@@ -133,62 +133,117 @@ export default function SubscriptionScreen({ navigation }: any) {
     } catch (e) {}
   }, [user?.phone, user?.id]);
 
+  // Read live UPI ID from Cloud Firestore settings/delivery_config
+  const [upiId, setUpiId] = useState('afoodoo@upi');
+  const [merchantName, setMerchantName] = useState('AFoodoo Kitchen');
+
+  useEffect(() => {
+    try {
+      const { doc, onSnapshot } = require('firebase/firestore');
+      const { firestore } = require('../firebaseConfig');
+      const unsub = onSnapshot(doc(firestore, 'settings', 'delivery_config'), (snap: any) => {
+        if (snap.exists()) {
+          const d = snap.data();
+          if (d.upi_id) setUpiId(d.upi_id);
+          if (d.merchant_name) setMerchantName(d.merchant_name);
+        }
+      });
+      return unsub;
+    } catch (e) {}
+  }, []);
+
   const handleSubscribe = async () => {
     if (!user) {
       Alert.alert('Login Required', 'Please sign in to buy a subscription pack.');
       return;
     }
-    setLoading(true);
-    const startDate = new Date().toISOString();
-    const durationDays = selectedPlan.duration === '1 Week' ? 7 : 30;
-    const endDate = new Date(Date.now() + durationDays * 86400000).toISOString();
 
-    const creditAmount = selectedPlan.wallet_credit || PLAN_WALLET_CREDITS[selectedPlan.id] || selectedPlan.price || 0;
-    const cleanPhone = user.phone ? user.phone.trim() : '';
-    const userDocId = user.id || `usr_${cleanPhone.replace(/\D/g, '')}`;
-    const subDocId = `sub_${Date.now()}`;
+    const { generateUpiUrl } = require('../utils/upi');
+    const { Linking } = require('react-native');
+    const upiUrl = generateUpiUrl({
+      upiId: upiId || 'afoodoo@upi',
+      merchantName: merchantName || 'AFoodoo Kitchen',
+      amount: selectedPlan.price,
+      note: `AFoodoo Plan — ${selectedPlan.title}`,
+    });
 
-    const subDocData = {
-      id: subDocId,
-      user_id: userDocId,
-      user_phone: cleanPhone,
-      user_name: user.name || `Customer (${cleanPhone})`,
-      plan_type: selectedPlan.title,
-      meals_remaining: selectedPlan.meals,
-      total_meals: selectedPlan.meals,
-      start_date: startDate,
-      end_date: endDate,
-      status: 'ACTIVE',
-      is_paused: false,
-      paused_dates: [],
-      auto_renew: autoRenew,
-      created_at: startDate,
-    };
-
-    // 1. Write subscription doc to Cloud Firestore subscriptions collection
     try {
-      const { doc, setDoc, updateDoc, arrayUnion } = require('firebase/firestore');
-      const { firestore } = require('../firebaseConfig');
-      await setDoc(doc(firestore, 'subscriptions', subDocId), subDocData);
-      await updateDoc(doc(firestore, 'users', userDocId), {
-        subscription_ids: arrayUnion(subDocId),
-        active_subscription: selectedPlan.title,
-      });
-    } catch (fsErr) {
-      console.log('Notice writing subscription doc to Cloud Firestore:', fsErr);
-    }
+      const canOpen = await Linking.canOpenURL(upiUrl);
+      if (canOpen) {
+        await Linking.openURL(upiUrl);
+      } else {
+        Alert.alert(
+          'UPI App Required 📱',
+          `Please install a UPI app (Google Pay, PhonePe, Paytm, BHIM) or pay directly to UPI ID: ${upiId}`
+        );
+      }
+    } catch (e) {}
 
-    setSubscriptions([subDocData as any, ...subscriptions]);
-    creditWalletBalance(
-      creditAmount,
-      `${selectedPlan.title} Plan Credit 🍲`,
-      'plan_credit'
-    );
+    // Show UTR payment confirmation dialog
+    Alert.prompt(
+      'Confirm UPI Payment 📱',
+      `Enter the 12-digit UPI Transaction / UTR Ref Number received in your payment app for ${selectedPlan.title} (₹${selectedPlan.price}):`,
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: 'Confirm & Activate Plan',
+          onPress: async (utrNumber?: string) => {
+            setLoading(true);
+            const startDate = new Date().toISOString();
+            const durationDays = selectedPlan.duration === '1 Week' ? 7 : 30;
+            const endDate = new Date(Date.now() + durationDays * 86400000).toISOString();
+            const cleanPhone = user.phone ? user.phone.trim() : '';
+            const userDocId = user.id || `usr_${cleanPhone.replace(/\D/g, '')}`;
+            const subDocId = `sub_${Date.now()}`;
 
-    setLoading(false);
-    Alert.alert(
-      'Subscription Activated! 🎉',
-      `You unlocked ${selectedPlan.meals} meals with ${selectedPlan.title}.\n\n💳 ₹${creditAmount.toLocaleString('en-IN')} credited to your AFoodoo Wallet!`
+            const subDocData = {
+              id: subDocId,
+              user_id: userDocId,
+              user_phone: cleanPhone,
+              user_name: user.name || `Customer (${cleanPhone})`,
+              plan_type: selectedPlan.title,
+              meals_remaining: selectedPlan.meals,
+              total_meals: selectedPlan.meals,
+              start_date: startDate,
+              end_date: endDate,
+              status: 'ACTIVE',
+              is_paused: false,
+              paused_dates: [],
+              auto_renew: autoRenew,
+              utr_number: utrNumber || 'UPI_DIRECT',
+              payment_method: 'upi',
+              created_at: startDate,
+            };
+
+            try {
+              const { doc, setDoc, updateDoc, arrayUnion } = require('firebase/firestore');
+              const { firestore } = require('../firebaseConfig');
+              await setDoc(doc(firestore, 'subscriptions', subDocId), subDocData);
+              await updateDoc(doc(firestore, 'users', userDocId), {
+                subscription_ids: arrayUnion(subDocId),
+                active_subscription: selectedPlan.title,
+              });
+            } catch (fsErr) {}
+
+            const creditAmount = selectedPlan.wallet_credit || PLAN_WALLET_CREDITS[selectedPlan.id] || selectedPlan.price || 0;
+            if (creditAmount > 0) {
+              creditWalletBalance(creditAmount, `Wallet Bonus — ${selectedPlan.title} Purchase 🎁`, 'plan_credit');
+            }
+
+            setLoading(false);
+            Alert.alert(
+              'Subscription Activated! 🎉',
+              `You unlocked ${selectedPlan.meals} meals with ${selectedPlan.title}.\n\n🎁 ₹${creditAmount.toLocaleString('en-IN')} credited to your AFoodoo Wallet!`
+            );
+          },
+        },
+      ],
+      'plain-text',
+      '',
+      'number-pad'
     );
   };
 
@@ -391,12 +446,12 @@ export default function SubscriptionScreen({ navigation }: any) {
         >
           <Text style={[styles.buyButtonText, { color: theme.buttonText }]}>
             {loading
-              ? 'Activating...'
-              : `Buy ${selectedPlan.title} (₹${selectedPlan.price.toLocaleString('en-IN')})`}
+              ? 'Activating Plan...'
+              : `📱 Pay ₹${selectedPlan.price.toLocaleString('en-IN')} via Direct UPI`}
           </Text>
           {!loading && (
             <Text style={styles.buyButtonSub}>
-              💳 ₹{(PLAN_WALLET_CREDITS[selectedPlan.id] ?? 0).toLocaleString('en-IN')} will be credited to your wallet
+              0% Fee • Instant 1-Tap GPay / PhonePe / Paytm Payment
             </Text>
           )}
         </TouchableOpacity>

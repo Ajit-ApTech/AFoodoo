@@ -292,7 +292,7 @@ export default function HomeScreen({ navigation }: any) {
             onPress={() => navigation.navigate('Wallet')}
             style={[styles.walletBadge, { backgroundColor: theme.surface, borderColor: theme.accentBadgeBg }]}
           >
-            <Text style={styles.walletEmoji}>👛</Text>
+            <Text style={styles.walletEmoji}>💳</Text>
             <Text style={[styles.walletText, { color: theme.primary }]}>
               ₹{(user?.wallet_balance || 500).toFixed(0)}
             </Text>
@@ -502,7 +502,7 @@ export default function HomeScreen({ navigation }: any) {
             style={[styles.gridCard, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}
             onPress={() => navigation.navigate('Wallet')}
           >
-            <Text style={styles.gridEmoji}>👛</Text>
+            <Text style={styles.gridEmoji}>💳</Text>
             <Text style={[styles.gridTitle, { color: theme.textPrimary }]}>Top-Up Wallet</Text>
             <Text style={[styles.gridSub, { color: theme.textMuted }]}>Instant credit</Text>
           </TouchableOpacity>
@@ -511,9 +511,9 @@ export default function HomeScreen({ navigation }: any) {
             style={[styles.gridCard, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}
             onPress={() => navigation.navigate('Profile')}
           >
-            <Text style={styles.gridEmoji}>👤</Text>
-            <Text style={[styles.gridTitle, { color: theme.textPrimary }]}>Account</Text>
-            <Text style={[styles.gridSub, { color: theme.textMuted }]}>Addresses & Info</Text>
+            <Text style={styles.gridEmoji}>⚙️</Text>
+            <Text style={[styles.gridTitle, { color: theme.textPrimary }]}>Account & Settings</Text>
+            <Text style={[styles.gridSub, { color: theme.textMuted }]}>Profile & Help Center</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>

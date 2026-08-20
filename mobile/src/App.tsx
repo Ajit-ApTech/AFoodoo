@@ -34,14 +34,15 @@ function MainNavigator() {
   const user = useAppStore(state => state.user);
 
   useEffect(() => {
-    // Register device for push notifications
-    registerForPushNotificationsAsync();
+    // Register device for push notifications and sync token to Cloud Firestore
+    const userDocId = user?.id || (user?.phone ? `usr_${user.phone.replace(/\D/g, '')}` : undefined);
+    registerForPushNotificationsAsync(userDocId);
     // Initialize real-time push notification listeners
     const unsubscribePush = initNotificationListeners();
     return () => {
       if (unsubscribePush) unsubscribePush();
     };
-  }, []);
+  }, [user?.phone]);
 
   const navTheme = isDark
     ? {
@@ -85,7 +86,7 @@ function MainNavigator() {
         <Stack.Screen name="OrderTracking" component={OrderTrackingScreen} options={{ title: 'Order Tracking' }} />
         <Stack.Screen name="Subscription" component={SubscriptionScreen} options={{ title: 'Meal Subscriptions' }} />
         <Stack.Screen name="Wallet" component={WalletScreen} options={{ title: 'AFoodoo Wallet' }} />
-        <Stack.Screen name="Profile" component={ProfileScreen} options={{ title: 'Account Settings' }} />
+        <Stack.Screen name="Profile" component={ProfileScreen} options={{ title: 'Account & Settings' }} />
       </Stack.Navigator>
     </NavigationContainer>
   );

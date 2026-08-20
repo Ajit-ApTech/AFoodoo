@@ -56,6 +56,35 @@ export default function MenuManagementPage() {
     }
   }, []);
 
+  const [itemRatingsMap, setItemRatingsMap] = useState<Record<string, { sum: number; count: number }>>({});
+
+  // Subscribe to Cloud Firestore orders collection to calculate real customer star ratings per dish
+  useEffect(() => {
+    try {
+      const unsub = onSnapshot(collection(db, 'orders'), snap => {
+        const ratingMap: Record<string, { sum: number; count: number }> = {};
+        snap.docs.forEach(docSnap => {
+          const d = docSnap.data();
+          if (d.rating) {
+            const keys = [
+              d.menu_item_id,
+              d.menu_title,
+              d.menu_title ? d.menu_title.toLowerCase().trim() : '',
+            ].filter(Boolean);
+
+            keys.forEach(k => {
+              if (!ratingMap[k]) ratingMap[k] = { sum: 0, count: 0 };
+              ratingMap[k].sum += Number(d.rating);
+              ratingMap[k].count += 1;
+            });
+          }
+        });
+        setItemRatingsMap(ratingMap);
+      });
+      return unsub;
+    } catch (e) {}
+  }, []);
+
   // Open modal for creating a new dish
   const handleOpenAddModal = () => {
     setEditingItem(null);
@@ -340,6 +369,22 @@ export default function MenuManagementPage() {
                     <span>Slot: <strong className="text-orange-400 font-semibold">{slotName}</strong></span>
                     <span>Portions: <strong className="text-emerald-400">{item.quantity_booked}/{item.max_quantity}</strong></span>
                   </div>
+
+                  {/* Live Customer Star Rating Badge */}
+                  {(() => {
+                    const rStats = itemRatingsMap[item.id] || itemRatingsMap[item.title];
+                    const avg = rStats ? (rStats.sum / rStats.count).toFixed(1) : null;
+                    return (
+                      <div className="pt-2.5 flex items-center justify-between text-xs border-t border-slate-800/80 mt-2">
+                        <span className="text-amber-400 font-extrabold flex items-center gap-1">
+                          ⭐ {avg ? `${avg} / 5.0` : 'New Dish'}
+                        </span>
+                        <span className="text-slate-500 text-[10px] font-semibold">
+                          {rStats ? `${rStats.count} Customer Reviews` : '0 Reviews'}
+                        </span>
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
 

@@ -91,6 +91,12 @@ export interface DeliveryConfig {
   kitchen_maps_link: string;
   max_delivery_radius_km: number;
   rider_whatsapp: string;
+  support_phone?: string;
+  support_email?: string;
+  support_hours?: string;
+  upi_id?: string;
+  merchant_name?: string;
+  enable_cod?: boolean;
   updated_at: string;
 }
 

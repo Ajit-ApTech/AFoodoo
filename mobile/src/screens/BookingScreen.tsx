@@ -15,6 +15,8 @@ import { useAppStore } from '../store/appStore';
 import { placeOrder } from '../api/orders';
 import { useTheme } from '../theme/ThemeContext';
 import { haversineDistance, buildMapsLink } from '../utils/geo';
+import { generateUpiUrl } from '../utils/upi';
+import { Linking } from 'react-native';
 
 export default function BookingScreen({ route, navigation }: any) {
   const { theme } = useTheme();
@@ -42,8 +44,28 @@ export default function BookingScreen({ route, navigation }: any) {
   const [detectedLng, setDetectedLng] = useState<number | null>(savedAddr?.longitude ?? null);
   const [locating, setLocating] = useState(false);
 
-  const [paymentMethod, setPaymentMethod] = useState<'wallet' | 'card'>('wallet');
+  const [paymentMethod, setPaymentMethod] = useState<'upi' | 'wallet' | 'cod'>('upi');
+  const [upiId, setUpiId] = useState('afoodoo@upi');
+  const [merchantName, setMerchantName] = useState('AFoodoo Kitchen');
+  const [enableCod, setEnableCod] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+
+  // Read live UPI ID & Payment settings from Cloud Firestore settings/delivery_config
+  React.useEffect(() => {
+    try {
+      const { doc, onSnapshot } = require('firebase/firestore');
+      const { firestore } = require('../firebaseConfig');
+      const unsub = onSnapshot(doc(firestore, 'settings', 'delivery_config'), (snap: any) => {
+        if (snap.exists()) {
+          const d = snap.data();
+          if (d.upi_id) setUpiId(d.upi_id);
+          if (d.merchant_name) setMerchantName(d.merchant_name);
+          if (d.enable_cod != null) setEnableCod(d.enable_cod);
+        }
+      });
+      return unsub;
+    } catch (e) {}
+  }, []);
 
   const walletBalance = user?.wallet_balance ?? 500;
   const isWalletSufficient = walletBalance >= item.price;
@@ -110,8 +132,23 @@ export default function BookingScreen({ route, navigation }: any) {
     }
 
     if (paymentMethod === 'wallet' && !isWalletSufficient) {
-      Alert.alert('Insufficient Balance', 'Please top up your AFoodoo Wallet or choose Credit Card payment.');
+      Alert.alert('Insufficient Balance', 'Please top up your AFoodoo Wallet or choose Direct UPI / Cash on Delivery.');
       return;
+    }
+
+    if (paymentMethod === 'upi') {
+      const upiUrl = generateUpiUrl({
+        upiId: upiId || 'afoodoo@upi',
+        merchantName: merchantName || 'AFoodoo Kitchen',
+        amount: item.price,
+        note: `AFoodoo Order — ${item.title}`,
+      });
+      Linking.openURL(upiUrl).catch(() => {
+        Alert.alert(
+          'UPI App Required 📱',
+          `Please install a UPI app (Google Pay, PhonePe, Paytm, BHIM) or pay directly to UPI ID: ${upiId}`
+        );
+      });
     }
 
     // Delivery range check — read kitchen GPS strictly from Cloud Firestore settings/delivery_config
@@ -196,7 +233,8 @@ export default function BookingScreen({ route, navigation }: any) {
       delivery_address: deliveryAddress,
       delivery_name: receiverName.trim(),
       delivery_phone: receiverPhone.trim(),
-      payment_status: 'paid',
+      payment_method: paymentMethod,
+      payment_status: paymentMethod === 'cod' ? 'pending' : 'paid',
       otp_code: otpCode,
       delivery_zone_id: 'zone_1',
       zone_name: 'Central Zone',
@@ -218,7 +256,7 @@ export default function BookingScreen({ route, navigation }: any) {
       const docRef = await addDoc(collection(firestore, 'orders'), orderData);
       const realOrderId = docRef.id;
 
-      // 2. Save address to user's saved addresses for future use
+      // 2. Save address to user's saved addresses for future use (if unique)
       const userDocId = user?.id || `usr_${(user?.phone || '').replace(/\D/g, '')}`;
       const savedAddress = {
         ...deliveryAddress,
@@ -228,19 +266,24 @@ export default function BookingScreen({ route, navigation }: any) {
         longitude: detectedLng ?? undefined,
         maps_link: mapsLink || undefined,
       };
-      try {
-        await updateDoc(doc(firestore, 'users', userDocId), {
-          addresses: arrayUnion(savedAddress),
-        });
-        // Also update local Zustand store
+
+      const existingAddresses = user?.addresses || [];
+      const alreadyExists = existingAddresses.some(
+        a =>
+          a.line1?.trim().toLowerCase() === savedAddress.line1?.trim().toLowerCase() &&
+          (a.zip || '').trim() === (savedAddress.zip || '').trim()
+      );
+
+      if (!alreadyExists) {
+        const updatedAddresses = [savedAddress, ...existingAddresses];
+        try {
+          await setDoc(doc(firestore, 'users', userDocId), { addresses: updatedAddresses }, { merge: true });
+        } catch (e) {}
+
         if (user) {
-          const updatedAddresses = [...(user.addresses || [])];
-          const exists = updatedAddresses.some(a => a.line1 === savedAddress.line1 && a.zip === savedAddress.zip);
-          if (!exists) {
-            setUser({ ...user, addresses: [savedAddress, ...updatedAddresses] });
-          }
+          setUser({ ...user, addresses: updatedAddresses });
         }
-      } catch (addrErr) {}
+      }
 
       // 3. Increment quantity_booked on menu item
       try {
@@ -415,6 +458,38 @@ export default function BookingScreen({ route, navigation }: any) {
         <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}>
           <Text style={[styles.cardHeader, { color: theme.textPrimary }]}>Payment Option</Text>
 
+          {/* 1. Direct UPI Option */}
+          <TouchableOpacity
+            style={[
+              styles.paymentOption,
+              {
+                backgroundColor: paymentMethod === 'upi' ? theme.primaryLight : theme.inputBg,
+                borderColor: paymentMethod === 'upi' ? theme.primary : theme.inputBorder,
+              },
+            ]}
+            onPress={() => setPaymentMethod('upi')}
+          >
+            <View style={styles.radioRow}>
+              <Text style={styles.optionEmoji}>📱</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.optionTitle, { color: theme.textPrimary }]}>
+                  Direct UPI (GPay / PhonePe / Paytm / BHIM)
+                </Text>
+                <Text style={[styles.optionSub, { color: theme.textSecondary }]}>
+                  Instant 1-tap app payment ({upiId})
+                </Text>
+              </View>
+              <View
+                style={[
+                  styles.radioCircle,
+                  { borderColor: paymentMethod === 'upi' ? theme.primary : theme.textMuted },
+                  paymentMethod === 'upi' && { backgroundColor: theme.primary },
+                ]}
+              />
+            </View>
+          </TouchableOpacity>
+
+          {/* 2. Wallet Option */}
           <TouchableOpacity
             style={[
               styles.paymentOption,
@@ -426,10 +501,10 @@ export default function BookingScreen({ route, navigation }: any) {
             onPress={() => setPaymentMethod('wallet')}
           >
             <View style={styles.radioRow}>
-              <Text style={styles.optionEmoji}>💳</Text>
+              <Text style={styles.optionEmoji}>👛</Text>
               <View style={{ flex: 1 }}>
                 <Text style={[styles.optionTitle, { color: theme.textPrimary }]}>
-                  AFoodoo Wallet (1-Tap Checkout)
+                  AFoodoo Wallet Balance
                 </Text>
                 <Text style={[styles.optionSub, { color: theme.textSecondary }]}>
                   Available Balance: ₹{walletBalance.toFixed(0)}
@@ -445,31 +520,38 @@ export default function BookingScreen({ route, navigation }: any) {
             </View>
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={[
-              styles.paymentOption,
-              {
-                backgroundColor: paymentMethod === 'card' ? theme.primaryLight : theme.inputBg,
-                borderColor: paymentMethod === 'card' ? theme.primary : theme.inputBorder,
-              },
-            ]}
-            onPress={() => setPaymentMethod('card')}
-          >
-            <View style={styles.radioRow}>
-              <Text style={styles.optionEmoji}>🌐</Text>
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.optionTitle, { color: theme.textPrimary }]}>Credit / Debit Card</Text>
-                <Text style={[styles.optionSub, { color: theme.textSecondary }]}>Instant online gateway</Text>
+          {/* 3. Cash on Delivery Option */}
+          {enableCod && (
+            <TouchableOpacity
+              style={[
+                styles.paymentOption,
+                {
+                  backgroundColor: paymentMethod === 'cod' ? theme.primaryLight : theme.inputBg,
+                  borderColor: paymentMethod === 'cod' ? theme.primary : theme.inputBorder,
+                },
+              ]}
+              onPress={() => setPaymentMethod('cod')}
+            >
+              <View style={styles.radioRow}>
+                <Text style={styles.optionEmoji}>💵</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.optionTitle, { color: theme.textPrimary }]}>
+                    Cash on Delivery / Pay at Kitchen
+                  </Text>
+                  <Text style={[styles.optionSub, { color: theme.textSecondary }]}>
+                    Pay cash when your tiffin is delivered
+                  </Text>
+                </View>
+                <View
+                  style={[
+                    styles.radioCircle,
+                    { borderColor: paymentMethod === 'cod' ? theme.primary : theme.textMuted },
+                    paymentMethod === 'cod' && { backgroundColor: theme.primary },
+                  ]}
+                />
               </View>
-              <View
-                style={[
-                  styles.radioCircle,
-                  { borderColor: paymentMethod === 'card' ? theme.primary : theme.textMuted },
-                  paymentMethod === 'card' && { backgroundColor: theme.primary },
-                ]}
-              />
-            </View>
-          </TouchableOpacity>
+            </TouchableOpacity>
+          )}
         </View>
 
         {/* Bill Summary */}

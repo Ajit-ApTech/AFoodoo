@@ -11,8 +11,9 @@ import {
 } from 'react-native';
 import { useAppStore } from '../store/appStore';
 import { useTheme } from '../theme/ThemeContext';
-import { collection, onSnapshot } from 'firebase/firestore';
+import { collection, doc, onSnapshot } from 'firebase/firestore';
 import { firestore } from '../firebaseConfig';
+import { generateUpiUrl } from '../utils/upi';
 
 export default function WalletScreen() {
   const { theme } = useTheme();
@@ -44,25 +45,78 @@ export default function WalletScreen() {
     } catch (e) {}
   }, [user?.phone, user?.id]);
 
+  // Read live UPI ID from Cloud Firestore settings/delivery_config
+  const [upiId, setUpiId] = useState('afoodoo@upi');
+  const [merchantName, setMerchantName] = useState('AFoodoo Kitchen');
+
+  useEffect(() => {
+    try {
+      const unsub = onSnapshot(doc(firestore, 'settings', 'delivery_config'), snap => {
+        if (snap.exists()) {
+          const d = snap.data();
+          if (d.upi_id) setUpiId(d.upi_id);
+          if (d.merchant_name) setMerchantName(d.merchant_name);
+        }
+      });
+      return unsub;
+    } catch (e) {}
+  }, []);
+
   const handleTopUp = async (amount: number) => {
     if (!user) {
       Alert.alert('Authentication Required', 'Please sign in to top up your wallet.');
       return;
     }
 
-    setTopUpLoading(amount);
-    // Simulate payment gateway processing
-    await new Promise(resolve => setTimeout(resolve, 800));
+    const { Linking } = require('react-native');
+    const upiUrl = generateUpiUrl({
+      upiId: upiId || 'afoodoo@upi',
+      merchantName: merchantName || 'AFoodoo Kitchen',
+      amount: amount,
+      note: `AFoodoo Wallet Topup ₹${amount}`,
+    });
 
     try {
-      creditWalletBalance(amount, `Wallet Top-Up via UPI (+₹${amount}) 💳`, 'topup');
-      Alert.alert(
-        'Top-Up Successful 💳',
-        `₹${amount.toLocaleString('en-IN')} added to your AFoodoo Wallet.\nNew balance: ₹${(currentBalance + amount).toLocaleString('en-IN')}.`
-      );
-    } finally {
-      setTopUpLoading(null);
-    }
+      const canOpen = await Linking.canOpenURL(upiUrl);
+      if (canOpen) {
+        await Linking.openURL(upiUrl);
+      } else {
+        Alert.alert(
+          'UPI App Required 📱',
+          `Please install a UPI app (Google Pay, PhonePe, Paytm, BHIM) or send payment directly to UPI ID: ${upiId}`
+        );
+      }
+    } catch (e) {}
+
+    // Prompt customer for 12-digit UPI UTR Transaction Number before crediting
+    Alert.prompt(
+      'Confirm UPI Top-Up 📱',
+      `Enter the 12-digit UPI Transaction / UTR Ref Number from your GPay / PhonePe / Paytm payment of ₹${amount}:`,
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: 'Confirm Top-Up',
+          onPress: async (utrNumber?: string) => {
+            setTopUpLoading(amount);
+            try {
+              creditWalletBalance(amount, `Wallet Top-Up via Direct UPI (+₹${amount}) [UTR: ${utrNumber || 'UPI_DIRECT'}]`, 'topup');
+              Alert.alert(
+                'Top-Up Successful 💳',
+                `₹${amount.toLocaleString('en-IN')} has been added to your AFoodoo Wallet.\nNew balance: ₹${(currentBalance + amount).toLocaleString('en-IN')}.`
+              );
+            } finally {
+              setTopUpLoading(null);
+            }
+          },
+        },
+      ],
+      'plain-text',
+      '',
+      'number-pad'
+    );
   };
 
   const typeIcon: Record<string, string> = {
@@ -75,7 +129,7 @@ export default function WalletScreen() {
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
       <ScrollView contentContainerStyle={styles.container}>
-        <Text style={[styles.pageTitle, { color: theme.textPrimary }]}>AFoodoo Wallet 👛</Text>
+        <Text style={[styles.pageTitle, { color: theme.textPrimary }]}>AFoodoo Wallet 💳</Text>
 
         {/* Balance Card */}
         <View style={[styles.balanceCard, { backgroundColor: theme.primary }]}>

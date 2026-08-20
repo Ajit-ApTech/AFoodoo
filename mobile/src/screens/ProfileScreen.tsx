@@ -11,6 +11,7 @@ import {
   Modal,
   TextInput,
   ActivityIndicator,
+  Linking,
 } from 'react-native';
 import { useAppStore } from '../store/appStore';
 import { useTheme, ThemeMode } from '../theme/ThemeContext';
@@ -22,6 +23,16 @@ export default function ProfileScreen({ navigation }: any) {
   const notificationSettings = useAppStore(state => state.notificationSettings);
   const setNotificationSettings = useAppStore(state => state.setNotificationSettings);
   const { theme, themeMode, setThemeMode } = useTheme();
+
+  // Edit Name Modal state
+  const [showEditNameModal, setShowEditNameModal] = useState(false);
+  const [nameInput, setNameInput] = useState(user?.name || '');
+  const [savingName, setSavingName] = useState(false);
+
+  // Admin Support details from Firestore
+  const [supportPhone, setSupportPhone] = useState('+91 98765 43210');
+  const [supportEmail, setSupportEmail] = useState('support@afoodoo.com');
+  const [supportHours, setSupportHours] = useState('8:00 AM - 10:00 PM Daily');
 
   // Add Address Modal state
   const [showAddModal, setShowAddModal] = useState(false);
@@ -66,6 +77,70 @@ export default function ProfileScreen({ navigation }: any) {
       console.log('User document listener notice');
     }
   }, [user?.phone]);
+
+  // Load real-time Admin Support details from Firestore settings/delivery_config
+  useEffect(() => {
+    try {
+      const { doc, onSnapshot } = require('firebase/firestore');
+      const { firestore } = require('../firebaseConfig');
+      const unsub = onSnapshot(doc(firestore, 'settings', 'delivery_config'), (snap: any) => {
+        if (snap.exists()) {
+          const d = snap.data();
+          if (d.support_phone) setSupportPhone(d.support_phone);
+          if (d.support_email) setSupportEmail(d.support_email);
+          if (d.support_hours) setSupportHours(d.support_hours);
+        }
+      });
+      return unsub;
+    } catch (e) {}
+  }, []);
+
+  const handleSaveName = async () => {
+    if (!nameInput.trim()) {
+      Alert.alert('Required', 'Please enter your name.');
+      return;
+    }
+    setSavingName(true);
+    const newName = nameInput.trim();
+
+    if (user?.phone) {
+      const cleanPhone = user.phone.trim();
+      const userDocId = user.id || `usr_${cleanPhone.replace(/\D/g, '')}`;
+      try {
+        const { doc, setDoc } = require('firebase/firestore');
+        const { firestore } = require('../firebaseConfig');
+        await setDoc(doc(firestore, 'users', userDocId), { name: newName }, { merge: true });
+      } catch (e) {}
+    }
+
+    if (user) {
+      setUser({ ...user, name: newName });
+    }
+
+    setSavingName(false);
+    setShowEditNameModal(false);
+    Alert.alert('Profile Updated 🎉', 'Your profile name has been saved.');
+  };
+
+  const handleCallSupport = () => {
+    const cleanPhone = supportPhone.replace(/[^0-9+]/g, '');
+    Linking.openURL(`tel:${cleanPhone}`).catch(() => {
+      Alert.alert('Call Support', `Phone number: ${supportPhone}`);
+    });
+  };
+
+  const handleWhatsAppSupport = () => {
+    const cleanDigits = supportPhone.replace(/\D/g, '');
+    Linking.openURL(`https://wa.me/${cleanDigits}?text=Hi%20AFoodoo%20Support,%20I%20need%20help%20with%20my%20order.`).catch(() => {
+      Alert.alert('WhatsApp Support', `WhatsApp Number: ${supportPhone}`);
+    });
+  };
+
+  const handleEmailSupport = () => {
+    Linking.openURL(`mailto:${supportEmail}?subject=AFoodoo%20Support%20Request`).catch(() => {
+      Alert.alert('Email Support', `Email us at: ${supportEmail}`);
+    });
+  };
 
   const handleToggleSetting = (key: string, value: boolean) => {
     const updated = { ...notificationSettings, [key]: value };
@@ -220,14 +295,23 @@ export default function ProfileScreen({ navigation }: any) {
     ]);
   };
 
-  const savedAddresses = user?.addresses || [];
+  const rawAddresses = user?.addresses || [];
+  const savedAddresses = rawAddresses.filter(
+    (addr, index, self) =>
+      index ===
+      self.findIndex(
+        a =>
+          a.line1?.trim().toLowerCase() === addr.line1?.trim().toLowerCase() &&
+          (a.zip || '').trim() === (addr.zip || '').trim()
+      )
+  );
 
   const inputStyle = [styles.modalInput, { backgroundColor: theme.inputBg, borderColor: theme.inputBorder, color: theme.inputText }];
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
       <ScrollView contentContainerStyle={styles.container}>
-        <Text style={[styles.pageTitle, { color: theme.textPrimary }]}>Account Settings</Text>
+        <Text style={[styles.pageTitle, { color: theme.textPrimary }]}>Account & Settings ⚙️</Text>
 
         {/* User Card */}
         <View style={[styles.userCard, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}>
@@ -237,9 +321,20 @@ export default function ProfileScreen({ navigation }: any) {
             </Text>
           </View>
           <View style={styles.userInfo}>
-            <Text style={[styles.userName, { color: theme.textPrimary }]}>
-              {user?.name || 'AFoodoo Customer'}
-            </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Text style={[styles.userName, { color: theme.textPrimary, flex: 1 }]}>
+                {user?.name || 'AFoodoo Customer'}
+              </Text>
+              <TouchableOpacity
+                onPress={() => {
+                  setNameInput(user?.name || '');
+                  setShowEditNameModal(true);
+                }}
+                style={[styles.editNameBadge, { backgroundColor: theme.primaryLight }]}
+              >
+                <Text style={[styles.editNameBadgeText, { color: theme.primary }]}>Edit Name ✏️</Text>
+              </TouchableOpacity>
+            </View>
             <Text style={[styles.userPhone, { color: theme.textSecondary }]}>
               {user?.phone || 'No phone registered'}
             </Text>
@@ -388,6 +483,42 @@ export default function ProfileScreen({ navigation }: any) {
           </View>
         </View>
 
+        {/* Help Center & Customer Support */}
+        <Text style={[styles.sectionTitle, { color: theme.textPrimary }]}>
+          Help Center & Support 💬
+        </Text>
+        <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}>
+          <Text style={[styles.supportHoursText, { color: theme.textMuted }]}>
+            🕒 Operating Hours: {supportHours}
+          </Text>
+
+          <View style={styles.supportButtonsRow}>
+            <TouchableOpacity
+              onPress={handleCallSupport}
+              style={[styles.supportActionBtn, { backgroundColor: '#E3F2FD', borderColor: '#90CAF9' }]}
+            >
+              <Text style={{ fontSize: 18 }}>📞</Text>
+              <Text style={[styles.supportActionText, { color: '#1565C0' }]}>Call Us</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={handleWhatsAppSupport}
+              style={[styles.supportActionBtn, { backgroundColor: '#E8F5E9', borderColor: '#A5D6A7' }]}
+            >
+              <Text style={{ fontSize: 18 }}>💬</Text>
+              <Text style={[styles.supportActionText, { color: '#2E7D32' }]}>WhatsApp</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={handleEmailSupport}
+              style={[styles.supportActionBtn, { backgroundColor: '#FFF3E0', borderColor: '#FFCC80' }]}
+            >
+              <Text style={{ fontSize: 18 }}>✉️</Text>
+              <Text style={[styles.supportActionText, { color: '#E65100' }]}>Email Us</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
         {/* Sign Out Button */}
         <TouchableOpacity
           style={[styles.logoutButton, { backgroundColor: theme.statusErrorBg, borderColor: theme.statusErrorText }]}
@@ -398,6 +529,51 @@ export default function ProfileScreen({ navigation }: any) {
           </Text>
         </TouchableOpacity>
       </ScrollView>
+
+      {/* Edit Profile Name Modal */}
+      <Modal visible={showEditNameModal} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { backgroundColor: theme.surface }]}>
+            <View style={styles.modalHeader}>
+              <Text style={[styles.modalTitle, { color: theme.textPrimary }]}>Edit Profile Name ✏️</Text>
+              <TouchableOpacity onPress={() => setShowEditNameModal(false)}>
+                <Text style={[styles.closeModalText, { color: theme.textMuted }]}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={{ marginVertical: 12 }}>
+              <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>Full Name</Text>
+              <TextInput
+                style={inputStyle}
+                placeholder="Enter your full name"
+                placeholderTextColor={theme.textMuted}
+                value={nameInput}
+                onChangeText={setNameInput}
+              />
+            </View>
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={[styles.cancelBtn, { borderColor: theme.surfaceBorder }]}
+                onPress={() => setShowEditNameModal(false)}
+              >
+                <Text style={{ color: theme.textSecondary, fontWeight: 'bold' }}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.saveAddrBtn, { backgroundColor: theme.primary }]}
+                onPress={handleSaveName}
+                disabled={savingName}
+              >
+                {savingName ? (
+                  <ActivityIndicator color="#FFF" size="small" />
+                ) : (
+                  <Text style={styles.saveAddrBtnText}>Save Profile Name</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* Add New Address Modal */}
       <Modal visible={showAddModal} animationType="slide" transparent>
@@ -678,4 +854,58 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   saveModalButtonText: { color: '#FFF', fontSize: 15, fontWeight: '700' },
+  editNameBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  editNameBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  supportHoursText: {
+    fontSize: 12,
+    marginBottom: 12,
+  },
+  supportButtonsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  supportActionBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  supportActionText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+    marginTop: 16,
+  },
+  cancelBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  saveAddrBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+  },
+  saveAddrBtnText: {
+    color: '#FFF',
+    fontWeight: '700',
+    fontSize: 13,
+  },
 });

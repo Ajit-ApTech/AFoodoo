@@ -81,7 +81,7 @@ export default function OrderQueuePage() {
         try {
           const userSnap = await getDoc(doc(db, 'users', userDocId));
           if (userSnap.exists()) {
-            fcmToken = userSnap.data()?.fcm_token || null;
+            fcmToken = userSnap.data()?.expo_push_token || userSnap.data()?.fcm_token || null;
           }
         } catch (uErr) {}
 
@@ -325,6 +325,17 @@ export default function OrderQueuePage() {
                   </div>
                   {getStatusBadge(order.status)}
                 </div>
+
+                {/* Customer Star Rating (if rated by customer) */}
+                {order.rating && (
+                  <div className="bg-amber-500/10 border border-amber-500/30 text-amber-400 font-bold text-xs px-3 py-1.5 rounded-xl flex items-center justify-between">
+                    <span className="flex items-center gap-1">
+                      <span>⭐</span>
+                      <span>{order.rating} / 5 Rating</span>
+                    </span>
+                    <span className="text-[10px] text-amber-300/80 font-medium">Customer Feedback</span>
+                  </div>
+                )}
 
                 {/* Customer Details */}
                 <div className="space-y-1 text-xs">

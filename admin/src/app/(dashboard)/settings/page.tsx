@@ -15,6 +15,12 @@ const DEFAULT_CONFIG: DeliveryConfig = {
   kitchen_maps_link: '',
   max_delivery_radius_km: 25,
   rider_whatsapp: '',
+  support_phone: '+91 98765 43210',
+  support_email: 'support@afoodoo.com',
+  support_hours: '8:00 AM - 10:00 PM Daily',
+  upi_id: 'afoodoo@upi',
+  merchant_name: 'AFoodoo Kitchen',
+  enable_cod: true,
   updated_at: '',
 };
 
@@ -344,6 +350,96 @@ export default function DeliverySettingsPage() {
           <p className="text-xs text-slate-500 mt-1.5">
             Used for the "Send Route to Rider via WhatsApp" button on the Live Order Queue page.
           </p>
+        </div>
+      </div>
+
+      {/* Section D: Customer Support & Contact Settings */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-5">
+        <div className="flex items-center gap-2 border-b border-slate-800 pb-4">
+          <Phone className="h-5 w-5 text-emerald-400" />
+          <h2 className="text-base font-extrabold text-white">Customer Support & Help Center Settings</h2>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+          <div>
+            <label className={labelClass}>Support Phone / WhatsApp Number</label>
+            <input
+              className={inputClass}
+              placeholder="e.g. +91 98765 43210"
+              value={config.support_phone || ''}
+              onChange={e => setConfig(prev => ({ ...prev, support_phone: e.target.value }))}
+            />
+          </div>
+
+          <div>
+            <label className={labelClass}>Support Email Address</label>
+            <input
+              className={inputClass}
+              placeholder="e.g. support@afoodoo.com"
+              value={config.support_email || ''}
+              onChange={e => setConfig(prev => ({ ...prev, support_email: e.target.value }))}
+            />
+          </div>
+        </div>
+
+        <div>
+          <label className={labelClass}>Support Operating Hours</label>
+          <input
+            className={inputClass}
+            placeholder="e.g. 8:00 AM - 10:00 PM Daily"
+            value={config.support_hours || ''}
+            onChange={e => setConfig(prev => ({ ...prev, support_hours: e.target.value }))}
+          />
+          <p className="text-xs text-slate-500 mt-1.5">
+            Displayed on the Mobile App Profile & Help Center screen for 1-tap customer assistance.
+          </p>
+        </div>
+      </div>
+
+      {/* Section E: Zero-Fee Direct UPI & Payment Settings */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-5">
+        <div className="flex items-center gap-2 border-b border-slate-800 pb-4">
+          <Phone className="h-5 w-5 text-purple-400" />
+          <h2 className="text-base font-extrabold text-white">0% Fee Direct UPI Payment Settings</h2>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+          <div>
+            <label className={labelClass}>Kitchen UPI VPA ID (Payee Address)</label>
+            <input
+              className={inputClass}
+              placeholder="e.g. afoodoo@upi or 9876543210@paytm"
+              value={config.upi_id || ''}
+              onChange={e => setConfig(prev => ({ ...prev, upi_id: e.target.value }))}
+            />
+            <p className="text-[11px] text-slate-500 mt-1">
+              Direct NPCI UPI link will open GPay / PhonePe / Paytm to send payments straight to this UPI ID with 0% gateway charges.
+            </p>
+          </div>
+
+          <div>
+            <label className={labelClass}>Merchant / Business Name</label>
+            <input
+              className={inputClass}
+              placeholder="e.g. AFoodoo Kitchen"
+              value={config.merchant_name || ''}
+              onChange={e => setConfig(prev => ({ ...prev, merchant_name: e.target.value }))}
+            />
+          </div>
+        </div>
+
+        <div className="pt-2">
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={config.enable_cod ?? true}
+              onChange={e => setConfig(prev => ({ ...prev, enable_cod: e.target.checked }))}
+              className="h-4 w-4 accent-orange-500 rounded"
+            />
+            <span className="text-xs font-bold text-slate-200">
+              Enable Cash on Delivery / Pay at Store Option for Customers
+            </span>
+          </label>
         </div>
       </div>
 

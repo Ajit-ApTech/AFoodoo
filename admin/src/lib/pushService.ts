@@ -45,6 +45,6 @@ export async function sendExpoPushNotification(
     console.log('Expo Push Dispatch result:', result);
     return result;
   } catch (error: any) {
-    console.error('Error sending Expo push notification:', error.message);
+    console.log('Expo push notice (web environment):', error?.message || error);
   }
 }

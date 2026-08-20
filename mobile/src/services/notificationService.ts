@@ -6,15 +6,17 @@ import { navigate } from './navigationRef';
 let Notifications: any = null;
 try {
   Notifications = require('expo-notifications');
-  Notifications.setNotificationHandler({
-    handleNotification: async () => ({
-      shouldShowAlert: true,
-      shouldPlaySound: true,
-      shouldSetBadge: true,
-      shouldShowBanner: true,
-      shouldShowList: true,
-    }),
-  });
+  if (Constants.appOwnership !== 'expo') {
+    Notifications.setNotificationHandler({
+      handleNotification: async () => ({
+        shouldShowAlert: true,
+        shouldPlaySound: true,
+        shouldSetBadge: true,
+        shouldShowBanner: true,
+        shouldShowList: true,
+      }),
+    });
+  }
 } catch (e) {
   console.log('expo-notifications module fallback');
 }
@@ -36,10 +38,13 @@ export async function setupNotificationChannel() {
 }
 
 /**
- * Register device push token (for standalone builds)
+ * Register device push token (for standalone builds and physical devices)
  */
-export async function registerForPushNotificationsAsync(): Promise<string | null> {
-  if (!Notifications || Constants.appOwnership === 'expo') return null;
+export async function registerForPushNotificationsAsync(userId?: string): Promise<string | null> {
+  if (!Notifications || Constants.appOwnership === 'expo') {
+    // SDK 53 Expo Go emulator suppresses remote push APIs — active on standalone APK builds
+    return null;
+  }
 
   try {
     await setupNotificationChannel();
@@ -54,10 +59,26 @@ export async function registerForPushNotificationsAsync(): Promise<string | null
     if (finalStatus !== 'granted') return null;
 
     const pushTokenData = await Notifications.getExpoPushTokenAsync({
-      projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID || 'afoodoo',
+      projectId: 'fb04d89b-b5b3-4d16-a220-7e5f3a90d82c',
     });
-    return pushTokenData.data;
+    const token = pushTokenData.data;
+
+    // Sync Push Token to user document in Cloud Firestore for background push delivery
+    if (token && userId) {
+      try {
+        const { doc, setDoc } = require('firebase/firestore');
+        const { firestore } = require('../firebaseConfig');
+        await setDoc(
+          doc(firestore, 'users', userId),
+          { expo_push_token: token, updated_at: new Date().toISOString() },
+          { merge: true }
+        );
+      } catch (e) {}
+    }
+
+    return token;
   } catch (error) {
+    console.log('Push token registration notice:', error);
     return null;
   }
 }

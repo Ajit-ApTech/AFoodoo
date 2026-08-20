@@ -41,8 +41,9 @@ export default function PushBroadcasterPage() {
         const tokens: string[] = [];
         usersSnap.docs.forEach(docSnap => {
           const data = docSnap.data();
-          if (data.fcm_token) {
-            tokens.push(data.fcm_token);
+          const token = data.expo_push_token || data.fcm_token;
+          if (token) {
+            tokens.push(token);
           }
         });
 
