@@ -167,17 +167,13 @@ export default function SubscriptionScreen({ navigation }: any) {
       note: `AFoodoo Plan — ${selectedPlan.title}`,
     });
 
-    try {
-      const canOpen = await Linking.canOpenURL(upiUrl);
-      if (canOpen) {
-        await Linking.openURL(upiUrl);
-      } else {
-        Alert.alert(
-          'UPI App Required 📱',
-          `Please install a UPI app (Google Pay, PhonePe, Paytm, BHIM) or pay directly to UPI ID: ${upiId}`
-        );
-      }
-    } catch (e) {}
+    // Directly open UPI app — avoids canOpenURL() Android 11+ package visibility false-negative
+    Linking.openURL(upiUrl).catch(() => {
+      Alert.alert(
+        'UPI Payment',
+        `Please complete the payment of ₹${selectedPlan.price} directly to UPI ID: ${upiId}\n\nOpen Google Pay, PhonePe, Paytm, or BHIM and pay to this ID manually.`
+      );
+    });
 
     // Show UTR payment confirmation dialog
     Alert.prompt(

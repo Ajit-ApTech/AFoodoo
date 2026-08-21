@@ -28,6 +28,13 @@ export async function sendExpoPushNotification(
     data: data || {},
     priority: 'high',
     channelId: 'order_updates',
+    // Android-specific: ensures FCM uses the MAX importance channel for heads-up banners
+    // even when the app is in background or closed
+    android: {
+      channelId: 'order_updates',
+      priority: 'high',
+      sound: 'default',
+    },
   }));
 
   try {

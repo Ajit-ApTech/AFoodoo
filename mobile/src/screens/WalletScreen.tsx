@@ -76,17 +76,13 @@ export default function WalletScreen() {
       note: `AFoodoo Wallet Topup ₹${amount}`,
     });
 
-    try {
-      const canOpen = await Linking.canOpenURL(upiUrl);
-      if (canOpen) {
-        await Linking.openURL(upiUrl);
-      } else {
-        Alert.alert(
-          'UPI App Required 📱',
-          `Please install a UPI app (Google Pay, PhonePe, Paytm, BHIM) or send payment directly to UPI ID: ${upiId}`
-        );
-      }
-    } catch (e) {}
+    // Directly open UPI app — avoids canOpenURL() Android 11+ package visibility false-negative
+    Linking.openURL(upiUrl).catch(() => {
+      Alert.alert(
+        'UPI Payment',
+        `Please complete the payment of ₹${amount} directly to UPI ID: ${upiId}\n\nOpen Google Pay, PhonePe, Paytm, or BHIM and pay to this ID manually.`
+      );
+    });
 
     // Prompt customer for 12-digit UPI UTR Transaction Number before crediting
     Alert.prompt(
