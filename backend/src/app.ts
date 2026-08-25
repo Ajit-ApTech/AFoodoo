@@ -14,6 +14,7 @@ import orderRoutes from './routes/orders';
 import subscriptionRoutes from './routes/subscriptions';
 import walletRoutes from './routes/wallet';
 import adminRoutes from './routes/admin';
+import paymentRoutes from './routes/payments';
 
 dotenv.config();
 
@@ -79,6 +80,7 @@ app.use('/api/orders', orderRoutes);
 app.use('/api/subscriptions', subscriptionRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/payments', paymentRoutes);
 
 // Global Error Handler
 app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {

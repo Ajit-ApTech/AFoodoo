@@ -121,3 +121,49 @@ export async function fetchAuditLogs(): Promise<AuditLog[]> {
     ];
   }
 }
+
+/** Fetch pending payment verification requests */
+export async function fetchPendingPayments() {
+  const res = await fetch(`${API_BASE_URL}/payments/pending`, {
+    headers: { 'x-admin-email': 'admin@afoodoo.com' },
+  });
+  if (!res.ok) {
+    const data = await res.json();
+    throw new Error(data.error || 'Failed to fetch pending payments');
+  }
+  return res.json();
+}
+
+/** Approve a payment request */
+export async function approvePaymentRequest(id: string) {
+  const res = await fetch(`${API_BASE_URL}/payments/${id}/approve`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-admin-email': 'admin@afoodoo.com',
+    },
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || 'Failed to approve payment');
+  }
+  return data;
+}
+
+/** Reject a payment request */
+export async function rejectPaymentRequest(id: string, reason?: string) {
+  const res = await fetch(`${API_BASE_URL}/payments/${id}/reject`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-admin-email': 'admin@afoodoo.com',
+    },
+    body: JSON.stringify({ reason }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || 'Failed to reject payment');
+  }
+  return data;
+}
+

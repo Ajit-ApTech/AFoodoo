@@ -55,3 +55,21 @@ export async function sendExpoPushNotification(
     console.log('Expo push notice (web environment):', error?.message || error);
   }
 }
+
+/**
+ * Register an admin device push token into the `admin_tokens` collection
+ */
+export async function registerAdminPushToken(token: string, adminEmail: string = 'admin@afoodoo.com') {
+  try {
+    const { doc, setDoc } = require('firebase/firestore');
+    const { db } = require('./firebase');
+    const tokenId = token.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 64);
+    await setDoc(doc(db, 'admin_tokens', tokenId), {
+      token: token,
+      expo_push_token: token,
+      admin_email: adminEmail,
+      updated_at: new Date().toISOString(),
+    }, { merge: true });
+  } catch (e) {}
+}
+

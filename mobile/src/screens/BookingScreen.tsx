@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { useAppStore } from '../store/appStore';
 import { placeOrder } from '../api/orders';
+import { submitPaymentRequest } from '../api/payments';
 import { useTheme } from '../theme/ThemeContext';
 import { haversineDistance, buildMapsLink } from '../utils/geo';
 import { generateUpiUrl } from '../utils/upi';
@@ -225,6 +226,92 @@ export default function BookingScreen({ route, navigation }: any) {
       longitude: detectedLng ?? undefined,
     };
 
+    // Save address to user's saved addresses for future convenience
+    const userDocId = user?.id || `usr_${(user?.phone || '').replace(/\D/g, '')}`;
+    const savedAddress = {
+      ...deliveryAddress,
+      id: `addr_${Date.now()}`,
+      state: '',
+      latitude: detectedLat ?? undefined,
+      longitude: detectedLng ?? undefined,
+      maps_link: mapsLink || undefined,
+    };
+
+    const existingAddresses = user?.addresses || [];
+    const alreadyExists = existingAddresses.some(
+      a =>
+        a.line1?.trim().toLowerCase() === savedAddress.line1?.trim().toLowerCase() &&
+        (a.zip || '').trim() === (savedAddress.zip || '').trim()
+    );
+
+    if (!alreadyExists) {
+      const updatedAddresses = [savedAddress, ...existingAddresses];
+      try {
+        const { doc, setDoc } = require('firebase/firestore');
+        const { firestore } = require('../firebaseConfig');
+        await setDoc(doc(firestore, 'users', userDocId), { addresses: updatedAddresses }, { merge: true });
+      } catch (e) {}
+
+      if (user) {
+        setUser({ ...user, addresses: updatedAddresses });
+      }
+    }
+
+    // Handle UPI payments via two-stage admin confirmation flow
+    if (paymentMethod === 'upi') {
+      try {
+        const result = await submitPaymentRequest({
+          type: 'order',
+          userId,
+          userName: user?.name || receiverName.trim() || 'AFoodoo Customer',
+          userPhone: user?.phone || receiverPhone.trim() || '+91 98765 43210',
+          amount: Number(item.price || 199),
+          orderPayload: {
+            menu_item_id: item.id,
+            menu_title: item.title,
+            meal_slot_id: slotId,
+            slot_name: activeSlot?.name || 'Lunch Tiffin',
+            delivery_window: activeSlot?.delivery_start_time && activeSlot?.delivery_end_time
+              ? `${activeSlot.delivery_start_time} – ${activeSlot.delivery_end_time}`
+              : activeSlot?.name?.toLowerCase().includes('dinner')
+              ? '7:30 PM – 8:30 PM'
+              : '1:00 PM – 2:00 PM',
+            delivery_address: deliveryAddress,
+            receiver_name: receiverName.trim(),
+            receiver_phone: receiverPhone.trim(),
+            delivery_lat: detectedLat,
+            delivery_lng: detectedLng,
+            maps_link: mapsLink,
+            delivery_distance_km: deliveryDistanceKm,
+            price: Number(item.price || 199),
+          },
+        });
+
+        setSubmitting(false);
+        Alert.alert(
+          'Payment Request Submitted ⏳',
+          `Your order verification request for ₹${item.price} has been sent to our kitchen team.\n\nOnce admin verifies the payment, your order will be confirmed!`,
+          [
+            {
+              text: 'Track Order',
+              onPress: () => navigation.navigate('OrderTracking', { orderId: result.payment_request_id }),
+            },
+            {
+              text: 'OK',
+              onPress: () => navigation.navigate('Home'),
+            },
+          ]
+        );
+        return;
+      } catch (err: any) {
+        setSubmitting(false);
+        Alert.alert('Payment Request Error', err.message || 'Could not submit payment request.');
+        return;
+      }
+
+    }
+
+    // Direct instant booking for Wallet & COD payments
     const orderData: any = {
       user_id: userId,
       user_name: user?.name || 'AFoodoo Customer',
@@ -262,65 +349,36 @@ export default function BookingScreen({ route, navigation }: any) {
 
     try {
       // 1. Write order to Cloud Firestore
-      const { collection, addDoc, doc, updateDoc, increment, setDoc, arrayUnion } = require('firebase/firestore');
+      const { collection, addDoc, doc, updateDoc, increment } = require('firebase/firestore');
       const { firestore } = require('../firebaseConfig');
       const docRef = await addDoc(collection(firestore, 'orders'), orderData);
       const realOrderId = docRef.id;
 
-      // 2. Save address to user's saved addresses for future use (if unique)
-      const userDocId = user?.id || `usr_${(user?.phone || '').replace(/\D/g, '')}`;
-      const savedAddress = {
-        ...deliveryAddress,
-        id: `addr_${Date.now()}`,
-        state: '',
-        latitude: detectedLat ?? undefined,
-        longitude: detectedLng ?? undefined,
-        maps_link: mapsLink || undefined,
-      };
-
-      const existingAddresses = user?.addresses || [];
-      const alreadyExists = existingAddresses.some(
-        a =>
-          a.line1?.trim().toLowerCase() === savedAddress.line1?.trim().toLowerCase() &&
-          (a.zip || '').trim() === (savedAddress.zip || '').trim()
-      );
-
-      if (!alreadyExists) {
-        const updatedAddresses = [savedAddress, ...existingAddresses];
-        try {
-          await setDoc(doc(firestore, 'users', userDocId), { addresses: updatedAddresses }, { merge: true });
-        } catch (e) {}
-
-        if (user) {
-          setUser({ ...user, addresses: updatedAddresses });
-        }
-      }
-
-      // 3. Increment quantity_booked on menu item
+      // 2. Increment quantity_booked on menu item
       try {
         await updateDoc(doc(firestore, 'menu_items', item.id), {
           quantity_booked: increment(1),
         });
       } catch (incErr) {}
 
-      // 4. Update local store menuItems
+      // 3. Update local store menuItems
       const store = useAppStore.getState();
       const updatedMenuItems = store.menuItems.map(m =>
         m.id === item.id ? { ...m, quantity_booked: (m.quantity_booked || 0) + 1 } : m
       );
       store.setMenuItems(updatedMenuItems);
 
-      // 5. Also attempt Express API backend POST
+      // 4. Also attempt Express API backend POST
       try {
         await placeOrder({ userId, menuItemId: item.id, slotId, address: { label: 'Home', line1: addressLine1 } });
       } catch (apiErr) {}
 
-      // 6. Deduct wallet balance
+      // 5. Deduct wallet balance if wallet payment
       if (paymentMethod === 'wallet') {
         deductWalletBalance(item.price, `${item.title} — Meal Booking 🍲`);
       }
 
-      // 7. Update Zustand store orders
+      // 6. Update Zustand store orders
       const currentOrders = useAppStore.getState().orders;
       useAppStore.getState().setOrders([{ id: realOrderId, ...orderData }, ...currentOrders]);
 
@@ -348,8 +406,11 @@ export default function BookingScreen({ route, navigation }: any) {
       if (paymentMethod === 'wallet') deductWalletBalance(item.price, `${item.title} — Meal Booking 🍲`);
       setSubmitting(false);
       const demoOrderId = `ord_${Math.floor(100000 + Math.random() * 900000)}`;
-      Alert.alert('Order Booked! 🍲', 'Your tiffin order is confirmed and sent to kitchen.', [
-        { text: 'Track Status', onPress: () => navigation.replace('OrderTracking', { orderId: demoOrderId }) },
+      Alert.alert('Order Confirmed! 🎉', 'Your tiffin meal has been booked.', [
+        {
+          text: 'Track Order',
+          onPress: () => navigation.replace('OrderTracking', { orderId: demoOrderId }),
+        },
       ]);
     }
   };

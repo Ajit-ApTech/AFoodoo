@@ -32,6 +32,35 @@ export default function OrderTrackingScreen({ route, navigation }: any) {
   const [loading, setLoading] = useState(true);
   const [expandedOrderIds, setExpandedOrderIds] = useState<Record<string, boolean>>({});
 
+  // Payment verification request tracking (when navigated from BookingScreen after UPI)
+  const [paymentRequest, setPaymentRequest] = useState<any | null>(null);
+  const [loadingPaymentReq, setLoadingPaymentReq] = useState(false);
+
+  // Check if routeOrderId is a payment_request doc (not an order doc)
+  // We detect this by attempting to listen to payment_requests/{routeOrderId}
+  useEffect(() => {
+    if (!routeOrderId) return;
+    setLoadingPaymentReq(true);
+    let unsubPR: any;
+    try {
+      unsubPR = onSnapshot(
+        doc(firestore, 'payment_requests', routeOrderId),
+        snap => {
+          if (snap.exists()) {
+            setPaymentRequest({ id: snap.id, ...snap.data() });
+          } else {
+            setPaymentRequest(null);
+          }
+          setLoadingPaymentReq(false);
+        },
+        () => setLoadingPaymentReq(false)
+      );
+    } catch {
+      setLoadingPaymentReq(false);
+    }
+    return () => { if (unsubPR) unsubPR(); };
+  }, [routeOrderId]);
+
   const steps = [
     { title: 'Order Booked', desc: 'Received & validated in kitchen queue' },
     { title: 'Kitchen Preparing', desc: 'Fresh ingredients being cooked' },
@@ -175,6 +204,85 @@ export default function OrderTrackingScreen({ route, navigation }: any) {
       <ScrollView contentContainerStyle={styles.container}>
         <Text style={[styles.pageTitle, { color: theme.textPrimary }]}>Track Tiffin Orders 🚴</Text>
 
+        {/* Payment Verification Status Banner — shown when navigated from BookingScreen after UPI */}
+        {paymentRequest && (
+          <View
+            style={{
+              backgroundColor:
+                paymentRequest.status === 'approved'
+                  ? '#E8F5E9'
+                  : paymentRequest.status === 'rejected'
+                  ? '#FFEBEE'
+                  : '#FFF8E1',
+              borderRadius: 16,
+              borderWidth: 1.5,
+              borderColor:
+                paymentRequest.status === 'approved'
+                  ? '#A5D6A7'
+                  : paymentRequest.status === 'rejected'
+                  ? '#FFCDD2'
+                  : '#FFE082',
+              padding: 16,
+              marginBottom: 16,
+            }}
+          >
+            <Text style={{ fontSize: 11, fontWeight: '700', color: '#888', letterSpacing: 0.8, marginBottom: 6, textTransform: 'uppercase' }}>
+              UPI Payment Verification
+            </Text>
+
+            <Text style={{ fontSize: 17, fontWeight: '800', color: '#222', marginBottom: 4 }}>
+              {paymentRequest.status === 'approved'
+                ? '✅ Payment Confirmed!'
+                : paymentRequest.status === 'rejected'
+                ? '❌ Payment Not Found'
+                : paymentRequest.status === 'utr_submitted'
+                ? '🔄 UTR Under Review'
+                : '⏳ Awaiting Admin Verification'}
+            </Text>
+
+            <Text style={{ fontSize: 13, color: '#555', marginBottom: 8 }}>
+              {paymentRequest.status === 'approved'
+                ? `Your ₹${paymentRequest.amount} payment has been verified. Your order is now confirmed and being prepared!`
+                : paymentRequest.status === 'rejected'
+                ? `Our team could not verify your payment. Reason: ${paymentRequest.reject_reason || 'Not specified'}. Please provide your 12-digit UTR from your UPI app.`
+                : paymentRequest.status === 'utr_submitted'
+                ? `Your UTR (${paymentRequest.utr_number}) is being verified by our team. You'll be notified soon!`
+                : `Your ₹${paymentRequest.amount} payment is being verified by our kitchen team. This usually takes a few minutes.`}
+            </Text>
+
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <View
+                style={{
+                  paddingHorizontal: 10,
+                  paddingVertical: 4,
+                  borderRadius: 20,
+                  backgroundColor:
+                    paymentRequest.status === 'approved'
+                      ? '#4CAF50'
+                      : paymentRequest.status === 'rejected'
+                      ? '#F44336'
+                      : paymentRequest.status === 'utr_submitted'
+                      ? '#FF9800'
+                      : '#FFC107',
+                }}
+              >
+                <Text style={{ color: '#fff', fontWeight: '800', fontSize: 11 }}>
+                  {paymentRequest.status === 'approved'
+                    ? 'CONFIRMED'
+                    : paymentRequest.status === 'rejected'
+                    ? 'REJECTED'
+                    : paymentRequest.status === 'utr_submitted'
+                    ? 'UTR SUBMITTED'
+                    : 'PENDING'}
+                </Text>
+              </View>
+              <Text style={{ fontSize: 11, color: '#999' }}>
+                ₹{paymentRequest.amount} · {paymentRequest.order_payload?.menu_title || 'Meal Order'}
+              </Text>
+            </View>
+          </View>
+        )}
+
         {loading ? (
           <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder, alignItems: 'center', paddingVertical: 40 }]}>
             <ActivityIndicator size="large" color={theme.primary} />
@@ -186,7 +294,9 @@ export default function OrderTrackingScreen({ route, navigation }: any) {
           <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder, alignItems: 'center', paddingVertical: 30 }]}>
             <Text style={[styles.noOrderTitle, { color: theme.textPrimary }]}>No Active Orders Found</Text>
             <Text style={[styles.noOrderSub, { color: theme.textSecondary }]}>
-              Book a delicious tiffin meal from the Menu screen to track live preparation and delivery!
+              {paymentRequest
+                ? 'Your order will appear here once our kitchen team verifies your UPI payment!'
+                : 'Book a delicious tiffin meal from the Menu screen to track live preparation and delivery!'}
             </Text>
             <TouchableOpacity
               style={[styles.bookBtn, { backgroundColor: theme.primary }]}
@@ -198,6 +308,7 @@ export default function OrderTrackingScreen({ route, navigation }: any) {
         ) : (
           <View style={styles.ordersListContainer}>
             {ordersList.map((ord: any) => {
+
               const isExpanded = !!expandedOrderIds[ord.id];
               const currentStep = mapStatusToStep(ord.status);
               const badge = getStatusBadge(ord.status);

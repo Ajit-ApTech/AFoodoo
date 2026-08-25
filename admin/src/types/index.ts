@@ -140,6 +140,41 @@ export interface AuditLog {
   timestamp: string;
 }
 
+export type PaymentRequestType = 'order' | 'wallet_topup' | 'subscription';
+
+export type PaymentRequestStatus =
+  | 'pending'
+  | 'approved'
+  | 'rejected'
+  | 'utr_submitted'
+  | 'permanently_rejected'
+  | 'expired';
+
+export interface PaymentRequest {
+  id: string;
+  type: PaymentRequestType;
+  user_id: string;
+  user_name: string;
+  user_phone: string;
+  amount: number;
+  status: PaymentRequestStatus;
+  order_payload?: any;
+  wallet_payload?: any;
+  subscription_payload?: any;
+  utr_number?: string | null;
+  utr_submitted_at?: string | null;
+  approved_by?: string | null;
+  approved_at?: string | null;
+  rejected_by?: string | null;
+  rejected_at?: string | null;
+  reject_reason?: string | null;
+  result_order_id?: string | null;
+  result_subscription_id?: string | null;
+  created_at: string;
+  updated_at: string;
+  expires_at?: string;
+}
+
 export interface DashboardSnapshot {
   total_bookings: number;
   lunch_bookings: number;
@@ -152,3 +187,4 @@ export interface DashboardSnapshot {
     minutes_remaining: number;
   };
 }
+

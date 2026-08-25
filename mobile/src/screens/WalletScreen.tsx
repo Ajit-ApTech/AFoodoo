@@ -11,9 +11,11 @@ import {
 } from 'react-native';
 import { useAppStore } from '../store/appStore';
 import { useTheme } from '../theme/ThemeContext';
-import { collection, doc, onSnapshot } from 'firebase/firestore';
+import { collection, doc, onSnapshot, query, where } from 'firebase/firestore';
 import { firestore } from '../firebaseConfig';
 import { generateUpiUrl } from '../utils/upi';
+import { submitPaymentRequest } from '../api/payments';
+import { UtrModal } from '../components/UtrModal';
 
 export default function WalletScreen() {
   const { theme } = useTheme();
@@ -22,13 +24,18 @@ export default function WalletScreen() {
 
   const [topUpLoading, setTopUpLoading] = useState<number | null>(null);
   const [realTransactions, setRealTransactions] = useState<any[]>([]);
+  const [pendingRequests, setPendingRequests] = useState<any[]>([]);
+
+  // UTR Modal State
+  const [utrModalVisible, setUtrModalVisible] = useState(false);
+  const [selectedReqForUtr, setSelectedReqForUtr] = useState<any>(null);
 
   const currentBalance = user?.wallet_balance ?? 500;
 
   // Real-time Cloud Firestore subscription for user's wallet transactions
   useEffect(() => {
-    if (!user?.phone) return;
-    const cleanPhone = user.phone.trim();
+    if (!user?.phone && !user?.id) return;
+    const cleanPhone = user.phone ? user.phone.trim() : '';
     const userDocId = user.id || `usr_${cleanPhone.replace(/\D/g, '')}`;
 
     try {
@@ -44,6 +51,28 @@ export default function WalletScreen() {
       return unsub;
     } catch (e) {}
   }, [user?.phone, user?.id]);
+
+  // Real-time subscription to user's payment_requests
+  useEffect(() => {
+    if (!user?.id && !user?.phone) return;
+    const cleanPhone = user.phone ? user.phone.trim() : '';
+    const userDocId = user.id || `usr_${cleanPhone.replace(/\D/g, '')}`;
+
+    try {
+      const q = query(
+        collection(firestore, 'payment_requests'),
+        where('user_id', '==', userDocId)
+      );
+      const unsub = onSnapshot(q, snap => {
+        const list = snap.docs
+          .map(d => ({ id: d.id, ...d.data() }))
+          .filter((d: any) => d.type === 'wallet_topup' && ['pending', 'utr_submitted', 'rejected'].includes(d.status))
+          .sort((a: any, b: any) => (b.created_at || '').localeCompare(a.created_at || ''));
+        setPendingRequests(list);
+      });
+      return unsub;
+    } catch (e) {}
+  }, [user?.id, user?.phone]);
 
   // Read live UPI ID from Cloud Firestore settings/delivery_config
   const [upiId, setUpiId] = useState('afoodoo@upi');
@@ -76,7 +105,7 @@ export default function WalletScreen() {
       note: `AFoodoo Wallet Topup ₹${amount}`,
     });
 
-    // Directly open UPI app — avoids canOpenURL() Android 11+ package visibility false-negative
+    // Open UPI app
     Linking.openURL(upiUrl).catch(() => {
       Alert.alert(
         'UPI Payment',
@@ -84,35 +113,32 @@ export default function WalletScreen() {
       );
     });
 
-    // Prompt customer for 12-digit UPI UTR Transaction Number before crediting
-    Alert.prompt(
-      'Confirm UPI Top-Up 📱',
-      `Enter the 12-digit UPI Transaction / UTR Ref Number from your GPay / PhonePe / Paytm payment of ₹${amount}:`,
-      [
-        {
-          text: 'Cancel',
-          style: 'cancel',
+    setTopUpLoading(amount);
+    try {
+      const cleanPhone = user.phone ? user.phone.trim() : '';
+      const userDocId = user.id || `usr_${cleanPhone.replace(/\D/g, '')}`;
+
+      await submitPaymentRequest({
+        type: 'wallet_topup',
+        userId: userDocId,
+        userName: user.name || 'AFoodoo Customer',
+        userPhone: cleanPhone,
+        amount: amount,
+        walletPayload: {
+          amount: amount,
+          description: `Wallet Top-Up (+₹${amount})`,
         },
-        {
-          text: 'Confirm Top-Up',
-          onPress: async (utrNumber?: string) => {
-            setTopUpLoading(amount);
-            try {
-              creditWalletBalance(amount, `Wallet Top-Up via Direct UPI (+₹${amount}) [UTR: ${utrNumber || 'UPI_DIRECT'}]`, 'topup');
-              Alert.alert(
-                'Top-Up Successful 💳',
-                `₹${amount.toLocaleString('en-IN')} has been added to your AFoodoo Wallet.\nNew balance: ₹${(currentBalance + amount).toLocaleString('en-IN')}.`
-              );
-            } finally {
-              setTopUpLoading(null);
-            }
-          },
-        },
-      ],
-      'plain-text',
-      '',
-      'number-pad'
-    );
+      });
+
+      Alert.alert(
+        'Top-Up Request Sent ⏳',
+        `Your top-up request for ₹${amount.toLocaleString('en-IN')} has been submitted for admin verification.\n\nYour wallet balance will be credited automatically as soon as the admin verifies your payment!`
+      );
+    } catch (err: any) {
+      Alert.alert('Request Notice', err.message || 'Could not submit top-up request.');
+    } finally {
+      setTopUpLoading(null);
+    }
   };
 
   const typeIcon: Record<string, string> = {
@@ -169,8 +195,91 @@ export default function WalletScreen() {
           ))}
         </View>
 
+        {/* Pending Payment Verification Requests */}
+        {pendingRequests.length > 0 && (
+          <View style={{ marginBottom: 20 }}>
+            <Text style={[styles.sectionTitle, { color: theme.textPrimary }]}>
+              ⏳ Pending Verification Requests
+            </Text>
+            {pendingRequests.map(req => (
+              <View
+                key={req.id}
+                style={[
+                  styles.pendingCard,
+                  {
+                    backgroundColor: theme.surface,
+                    borderColor: req.status === 'rejected' ? theme.statusErrorText : theme.accent,
+                  },
+                ]}
+              >
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text style={[styles.pendingTitle, { color: theme.textPrimary }]}>
+                    Top-Up of ₹{req.amount}
+                  </Text>
+                  <Text
+                    style={[
+                      styles.pendingBadge,
+                      {
+                        backgroundColor:
+                          req.status === 'rejected'
+                            ? '#FFEBEE'
+                            : req.status === 'utr_submitted'
+                            ? '#FFF9C4'
+                            : theme.primaryLight,
+                        color:
+                          req.status === 'rejected'
+                            ? '#C62828'
+                            : req.status === 'utr_submitted'
+                            ? '#F57F17'
+                            : theme.primary,
+                      },
+                    ]}
+                  >
+                    {req.status === 'rejected'
+                      ? 'Action Required ⚠️'
+                      : req.status === 'utr_submitted'
+                      ? 'UTR Submitted 🔍'
+                      : 'Verifying ⏳'}
+                  </Text>
+                </View>
+
+                {req.status === 'rejected' && (
+                  <View style={{ marginTop: 8 }}>
+                    <Text style={{ fontSize: 12, color: theme.statusErrorText, marginBottom: 8 }}>
+                      Note: {req.reject_reason || 'Payment could not be verified in UPI statement.'}
+                    </Text>
+                    <TouchableOpacity
+                      style={[styles.utrActionBtn, { backgroundColor: theme.primary }]}
+                      onPress={() => {
+                        setSelectedReqForUtr(req);
+                        setUtrModalVisible(true);
+                      }}
+                    >
+                      <Text style={{ color: '#FFF', fontSize: 12, fontWeight: '700' }}>
+                        Enter 12-Digit UTR Number →
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+
+                {req.status === 'pending' && (
+                  <Text style={{ fontSize: 11, color: theme.textSecondary, marginTop: 4 }}>
+                    Admin will verify UPI credits and add balance to your wallet shortly.
+                  </Text>
+                )}
+
+                {req.status === 'utr_submitted' && (
+                  <Text style={{ fontSize: 11, color: theme.textSecondary, marginTop: 4 }}>
+                    UTR: {req.utr_number} • Under re-verification by admin.
+                  </Text>
+                )}
+              </View>
+            ))}
+          </View>
+        )}
+
         {/* Transaction History */}
-        <Text style={[styles.sectionTitle, { color: theme.textPrimary, marginTop: 24 }]}>
+        <Text style={[styles.sectionTitle, { color: theme.textPrimary, marginTop: 12 }]}>
           Transaction History
         </Text>
         <View
@@ -221,6 +330,22 @@ export default function WalletScreen() {
           )}
         </View>
       </ScrollView>
+
+      {/* UTR Re-Verification Modal */}
+      <UtrModal
+        visible={utrModalVisible}
+        paymentRequestId={selectedReqForUtr?.id || null}
+        amount={selectedReqForUtr?.amount}
+        reason={selectedReqForUtr?.reject_reason}
+        onClose={() => {
+          setUtrModalVisible(false);
+          setSelectedReqForUtr(null);
+        }}
+        onSuccess={() => {
+          setUtrModalVisible(false);
+          setSelectedReqForUtr(null);
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -278,4 +403,26 @@ const styles = StyleSheet.create({
   txTime: { fontSize: 11, marginTop: 2 },
   txAmount: { fontSize: 15, fontWeight: '800' },
   divider: { height: 1, marginVertical: 4 },
+  pendingCard: {
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1.5,
+    marginBottom: 10,
+  },
+  pendingTitle: { fontSize: 14, fontWeight: '700' },
+  pendingBadge: {
+    fontSize: 11,
+    fontWeight: '700',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    overflow: 'hidden',
+  },
+  utrActionBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 });

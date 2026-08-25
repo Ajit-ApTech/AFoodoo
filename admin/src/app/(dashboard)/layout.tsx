@@ -21,13 +21,37 @@ import {
   MapPin,
   Menu,
   X,
+  CreditCard,
 } from 'lucide-react';
+import { collection, onSnapshot, query, where } from 'firebase/firestore';
+import { db } from '../../lib/firebase';
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { user, logout } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [pendingPaymentsCount, setPendingPaymentsCount] = useState(0);
+
+  // Real-time listener for pending payment requests count
+  React.useEffect(() => {
+    try {
+      const q = query(
+        collection(db, 'payment_requests'),
+        where('status', 'in', ['pending', 'utr_submitted'])
+      );
+      const unsub = onSnapshot(
+        q,
+        snap => {
+          setPendingPaymentsCount(snap.size);
+        },
+        error => {
+          // Gracefully handled if Firestore security rules block direct client access
+        }
+      );
+      return unsub;
+    } catch (e) {}
+  }, []);
 
   const handleLogout = () => {
     logout();
@@ -40,6 +64,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       href: '/',
       icon: LayoutDashboard,
       roles: ['super_admin', 'kitchen_staff', 'delivery_manager'],
+    },
+    {
+      name: 'Payment Approvals',
+      href: '/payment-approvals',
+      icon: CreditCard,
+      badge: pendingPaymentsCount,
+      roles: ['super_admin', 'kitchen_staff'],
     },
     {
       name: 'Meal Slot Cutoffs',
@@ -150,14 +181,21 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 key={item.href}
                 href={item.href}
                 onClick={() => setMobileOpen(false)}
-                className={`flex items-center gap-3 px-3.5 py-3 rounded-xl text-xs font-semibold transition-all ${
+                className={`flex items-center justify-between px-3.5 py-3 rounded-xl text-xs font-semibold transition-all ${
                   isActive
                     ? 'bg-orange-600 text-white shadow-lg shadow-orange-600/25'
                     : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/60'
                 }`}
               >
-                <Icon className="h-4 w-4 shrink-0" />
-                <span>{item.name}</span>
+                <div className="flex items-center gap-3">
+                  <Icon className="h-4 w-4 shrink-0" />
+                  <span>{item.name}</span>
+                </div>
+                {item.badge != null && item.badge > 0 && (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-rose-500 text-white animate-pulse">
+                    {item.badge}
+                  </span>
+                )}
               </Link>
             );
           })}

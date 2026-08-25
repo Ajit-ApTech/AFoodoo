@@ -96,6 +96,41 @@ export interface DeliveryZone {
   assigned_rider_id?: string;
 }
 
+export type PaymentRequestType = 'order' | 'wallet_topup' | 'subscription';
+
+export type PaymentRequestStatus =
+  | 'pending'
+  | 'approved'
+  | 'rejected'
+  | 'utr_submitted'
+  | 'permanently_rejected'
+  | 'expired';
+
+export interface PaymentRequest {
+  id: string;
+  type: PaymentRequestType;
+  user_id: string;
+  user_name: string;
+  user_phone: string;
+  amount: number;
+  status: PaymentRequestStatus;
+  order_payload?: any;
+  wallet_payload?: any;
+  subscription_payload?: any;
+  utr_number?: string | null;
+  utr_submitted_at?: any;
+  approved_by?: string | null;
+  approved_at?: any;
+  rejected_by?: string | null;
+  rejected_at?: any;
+  reject_reason?: string | null;
+  result_order_id?: string | null;
+  result_subscription_id?: string | null;
+  created_at: any;
+  updated_at: any;
+  expires_at?: any;
+}
+
 export interface AuditLog {
   id: string;
   admin_id: string;
@@ -106,9 +141,12 @@ export interface AuditLog {
     | 'cutoff_change'
     | 'menu_edit'
     | 'subscription_override'
-    | 'push_broadcast';
+    | 'push_broadcast'
+    | 'payment_approval'
+    | 'payment_rejection';
   details: string;
   target_id?: string;
   ip_address?: string;
   timestamp: FirebaseFirestore.Timestamp;
 }
+
