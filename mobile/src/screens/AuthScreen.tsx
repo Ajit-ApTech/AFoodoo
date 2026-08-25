@@ -9,6 +9,7 @@ import {
   SafeAreaView,
   ScrollView,
   ActivityIndicator,
+  Image,
 } from 'react-native';
 import { firestore } from '../firebaseConfig';
 import { useAppStore } from '../store/appStore';
@@ -30,19 +31,33 @@ export default function AuthScreen({ navigation }: any) {
   const [phone, setPhone] = useState('');
   const [showCountryPicker, setShowCountryPicker] = useState(false);
   const [code, setCode] = useState('');
-  const [address, setAddress] = useState('Flat 402, Green Park Residency, Sector 15');
+  const [address, setAddress] = useState('');
   const [verificationId, setVerificationId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [syncStatus, setSyncStatus] = useState<string>('');
   const setUser = useAppStore(state => state.setUser);
 
-  const fullPhone = `+${countryCode}${phone.replace(/\D/g, '')}`;
+  const cleanPhoneDigits = phone.replace(/\D/g, '');
+  const fullPhone = `+${countryCode}${cleanPhoneDigits}`;
   const selectedCountry = COUNTRY_CODES.find(c => c.value === countryCode) || COUNTRY_CODES[0];
 
   const sendOtp = () => {
-    if (!phone || phone.replace(/\D/g, '').length < 7) {
-      Alert.alert('Invalid Number', 'Please enter a valid mobile number (7–10 digits).');
-      return;
+    if (countryCode === '91') {
+      if (cleanPhoneDigits.length !== 10 || !/^[6-9]\d{9}$/.test(cleanPhoneDigits)) {
+        Alert.alert(
+          'Invalid Mobile Number',
+          'Please enter a valid 10-digit Indian mobile number starting with 6, 7, 8, or 9.'
+        );
+        return;
+      }
+    } else {
+      if (cleanPhoneDigits.length < 10) {
+        Alert.alert(
+          'Invalid Mobile Number',
+          'Please enter a valid mobile number with at least 10 digits.'
+        );
+        return;
+      }
     }
 
     const dynamicCode = Math.floor(100000 + Math.random() * 900000).toString();
@@ -60,9 +75,18 @@ export default function AuthScreen({ navigation }: any) {
       return;
     }
 
+    if (countryCode === '91') {
+      if (cleanPhoneDigits.length !== 10 || !/^[6-9]\d{9}$/.test(cleanPhoneDigits)) {
+        Alert.alert('Invalid Mobile Number', 'Please enter a valid 10-digit mobile number.');
+        return;
+      }
+    } else if (cleanPhoneDigits.length < 10) {
+      Alert.alert('Invalid Mobile Number', 'Please enter a valid mobile number with at least 10 digits.');
+      return;
+    }
+
     setLoading(true);
-    const cleanDigits = phone.replace(/\D/g, '') || '9876543210';
-    const userDocId = `usr_${countryCode}${cleanDigits}`;
+    const userDocId = `usr_${countryCode}${cleanPhoneDigits}`;
 
     // Sync or create user in Cloud Firestore
     const firestoreUserData: any = await syncUserWithFirestore(fullPhone);
@@ -75,24 +99,31 @@ export default function AuthScreen({ navigation }: any) {
       return;
     }
 
+    const userAddresses = firestoreUserData?.addresses && firestoreUserData.addresses.length > 0
+      ? firestoreUserData.addresses
+      : address.trim()
+        ? [
+            {
+              id: 'addr_1',
+              label: 'Home',
+              line1: address.trim(),
+              city: '',
+              state: '',
+              zip: '',
+              latitude: 0,
+              longitude: 0,
+            },
+          ]
+        : [];
+
     const authenticatedUser = {
       id: firestoreUserData?.id || userDocId,
       name: firestoreUserData?.name || `Customer (${fullPhone})`,
       phone: fullPhone,
       wallet_balance: firestoreUserData?.wallet_balance ?? 500,
       is_blocked: firestoreUserData?.is_blocked || false,
-      addresses: [
-        {
-          label: 'Home',
-          line1: address,
-          city: 'Mumbai',
-          state: 'Maharashtra',
-          zip: '400001',
-          latitude: 19.076,
-          longitude: 72.877,
-        },
-      ],
-      default_address_id: 'addr_1',
+      addresses: userAddresses,
+      default_address_id: userAddresses[0]?.id || 'addr_1',
       subscription_status: 'none',
       loyalty_points: 120,
     };
@@ -102,38 +133,16 @@ export default function AuthScreen({ navigation }: any) {
     navigation.replace('Home');
   };
 
-  const handleGuestLogin = () => {
-    const guestUser = {
-      id: 'guest-user-456',
-      name: 'Guest Diner',
-      phone: '+91 9900000000',
-      addresses: [
-        {
-          label: 'Current Location',
-          line1: address,
-          city: 'Mumbai',
-          state: 'Maharashtra',
-          zip: '400001',
-          latitude: 19.076,
-          longitude: 72.877,
-        },
-      ],
-      wallet_balance: 350,
-      subscription_ids: ['sub-demo-1'],
-      created_at: new Date().toISOString(),
-    };
-    setUser(guestUser);
-    navigation.replace('Home');
-  };
-
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
         {/* Brand Header */}
         <View style={styles.headerContainer}>
-          <View style={[styles.logoBadge, { backgroundColor: theme.surface }]}>
-            <Text style={styles.logoEmoji}>🍲</Text>
-          </View>
+          <Image
+            source={require('../../assets/splash.png')}
+            style={styles.brandLogo}
+            resizeMode="contain"
+          />
           <Text style={[styles.brandTitle, { color: theme.primary }]}>AFoodoo</Text>
           <Text style={[styles.brandSubtitle, { color: theme.textSecondary }]}>
             Home-Cooked Tiffin Meals • Fixed Delivery Windows
@@ -205,7 +214,7 @@ export default function AuthScreen({ navigation }: any) {
             )}
 
             {/* Show assembled full number */}
-            {phone.replace(/\D/g, '').length > 0 && (
+            {cleanPhoneDigits.length > 0 && (
               <Text style={[styles.fullPhonePreview, { color: theme.textSecondary }]}>
                 Full number: {fullPhone}
               </Text>
@@ -243,7 +252,7 @@ export default function AuthScreen({ navigation }: any) {
           <View style={styles.inputGroup}>
             <Text style={[styles.inputLabel, { color: theme.textPrimary }]}>Delivery Address 📍</Text>
             <TextInput
-              placeholder="Flat No., Building, Area"
+              placeholder="Flat No., Building, Street (Optional)"
               placeholderTextColor={theme.textMuted}
               style={[
                 styles.input,
@@ -285,25 +294,6 @@ export default function AuthScreen({ navigation }: any) {
               </Text>
             </TouchableOpacity>
           )}
-
-          <View style={styles.dividerRow}>
-            <View style={[styles.dividerLine, { backgroundColor: theme.surfaceBorder }]} />
-            <Text style={[styles.dividerText, { color: theme.textMuted }]}>or</Text>
-            <View style={[styles.dividerLine, { backgroundColor: theme.surfaceBorder }]} />
-          </View>
-
-          <TouchableOpacity
-            style={[
-              styles.guestButton,
-              { backgroundColor: theme.primaryLight, borderColor: theme.accentBadgeBg },
-            ]}
-            onPress={handleGuestLogin}
-            disabled={loading}
-          >
-            <Text style={[styles.guestButtonText, { color: theme.primary }]}>
-              Explore as Guest →
-            </Text>
-          </TouchableOpacity>
         </View>
 
         {/* Slot Window Info Footer */}
@@ -344,20 +334,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 28,
   },
-  logoBadge: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
+  brandLogo: {
+    width: 84,
+    height: 84,
+    borderRadius: 20,
     marginBottom: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 10,
-    elevation: 4,
   },
-  logoEmoji: { fontSize: 38, marginTop: 4 },
   brandTitle: { fontSize: 32, fontWeight: '800', letterSpacing: 0.5 },
   brandSubtitle: { fontSize: 13, marginTop: 4, textAlign: 'center' },
   card: {
@@ -434,22 +416,6 @@ const styles = StyleSheet.create({
   primaryButtonText: { fontSize: 16, fontWeight: '700' },
   resendRow: { alignItems: 'center', marginTop: 12 },
   resendText: { fontSize: 13 },
-  dividerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginVertical: 18,
-  },
-  dividerLine: { flex: 1, height: 1 },
-  dividerText: { marginHorizontal: 12, fontSize: 12 },
-  guestButton: {
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingVertical: 13,
-    alignItems: 'center',
-    minHeight: 48,
-    justifyContent: 'center',
-  },
-  guestButtonText: { fontSize: 15, fontWeight: '600' },
   windowInfoCard: {
     borderRadius: 16,
     padding: 16,

@@ -90,18 +90,29 @@ export default function BookingScreen({ route, navigation }: any) {
       setDetectedLat(lat);
       setDetectedLng(lng);
 
-      // Auto-fill address via native OS reverse geocoding (free)
+      // Auto-fill address via native OS reverse geocoding
       try {
         const geocoded = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
         if (geocoded && geocoded.length > 0) {
           const g = geocoded[0];
-          if (!addressLine1) setAddressLine1([g.streetNumber, g.street].filter(Boolean).join(' '));
-          if (!city) setCity(g.city || g.subregion || '');
-          if (!pincode) setPincode(g.postalCode || '');
+          const streetParts = [g.name, g.streetNumber, g.street, g.subregion].filter(Boolean);
+          const detectedStreet = streetParts.length > 0 ? streetParts.join(', ') : '';
+          const detectedCity = g.city || g.subregion || g.district || '';
+          const detectedZip = g.postalCode || '';
+
+          if (detectedStreet) {
+            setAddressLine1(detectedStreet);
+          }
+          if (detectedCity) {
+            setCity(detectedCity);
+          }
+          if (detectedZip) {
+            setPincode(detectedZip);
+          }
         }
       } catch (geocodeErr) {}
 
-      Alert.alert('📍 Location Detected', 'Your current GPS location has been captured. Please verify and complete the address fields.');
+      Alert.alert('📍 Location Detected', 'City, Pincode, and street address have been updated from your current GPS location.');
     } catch (e: any) {
       Alert.alert('Location Error', `Could not detect location: ${e.message}`);
     }

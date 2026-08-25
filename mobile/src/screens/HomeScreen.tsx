@@ -300,12 +300,18 @@ export default function HomeScreen({ navigation }: any) {
         </View>
 
         {/* Delivery Address Pin */}
-        <View style={[styles.addressBar, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}>
+        <TouchableOpacity
+          style={[styles.addressBar, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}
+          onPress={() => navigation.navigate('Profile')}
+          activeOpacity={0.7}
+        >
           <Text style={styles.addressPin}>📍</Text>
           <Text style={[styles.addressText, { color: theme.textSecondary }]} numberOfLines={1}>
-            {user?.addresses?.[0]?.line1 || 'Flat 402, Green Park Residency, Sector 15'}
+            {user?.addresses?.[0]?.line1
+              ? `${user.addresses[0].line1}${user.addresses[0].city ? `, ${user.addresses[0].city}` : ''}`
+              : 'No address set • Tap to add in Profile'}
           </Text>
-        </View>
+        </TouchableOpacity>
 
         {/* Cutoff Window Countdown Cards — Renders ALL active meal slots */}
         {loading ? (

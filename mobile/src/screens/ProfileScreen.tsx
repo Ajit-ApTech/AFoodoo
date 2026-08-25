@@ -193,13 +193,24 @@ export default function ProfileScreen({ navigation }: any) {
         const geocoded = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
         if (geocoded && geocoded.length > 0) {
           const g = geocoded[0];
-          if (!line1) setLine1([g.streetNumber, g.street].filter(Boolean).join(' '));
-          if (!city) setCity(g.city || g.subregion || '');
-          if (!zip) setZip(g.postalCode || '');
+          const streetParts = [g.name, g.streetNumber, g.street, g.subregion].filter(Boolean);
+          const detectedStreet = streetParts.length > 0 ? streetParts.join(', ') : '';
+          const detectedCity = g.city || g.subregion || g.district || '';
+          const detectedZip = g.postalCode || '';
+
+          if (detectedStreet) {
+            setLine1(detectedStreet);
+          }
+          if (detectedCity) {
+            setCity(detectedCity);
+          }
+          if (detectedZip) {
+            setZip(detectedZip);
+          }
         }
       } catch (e) {}
 
-      Alert.alert('📍 Location Captured', 'Your GPS location was captured and address fields auto-filled!');
+      Alert.alert('📍 Location Captured', 'Your GPS location was captured and address fields updated!');
     } catch (e: any) {
       Alert.alert('GPS Error', e.message);
     }
