@@ -1,5 +1,6 @@
 import { API_BASE_URL } from './config';
 import { firestore } from '../firebaseConfig';
+import { getCachedPushToken } from '../services/notificationService';
 
 export interface SubmitPaymentRequestParams {
   type: 'order' | 'wallet_topup' | 'subscription';
@@ -10,6 +11,8 @@ export interface SubmitPaymentRequestParams {
   orderPayload?: any;
   walletPayload?: any;
   subscriptionPayload?: any;
+  utrNumber?: string;
+  expoPushToken?: string;
 }
 
 /**
@@ -20,6 +23,17 @@ export async function submitPaymentRequest(params: SubmitPaymentRequestParams): 
   payment_request_id: string;
   message?: string;
 }> {
+  const cleanUtr = params.utrNumber ? params.utrNumber.trim() : null;
+  const pushToken = params.expoPushToken || (await getCachedPushToken());
+
+  const orderPayloadWithToken = params.orderPayload
+    ? {
+        ...params.orderPayload,
+        expo_push_token: pushToken || params.orderPayload.expo_push_token || null,
+        fcm_token: pushToken || params.orderPayload.fcm_token || null,
+      }
+    : null;
+
   // 1. Try Backend API endpoint first
   try {
     const res = await fetch(`${API_BASE_URL}/payments/request`, {
@@ -31,9 +45,11 @@ export async function submitPaymentRequest(params: SubmitPaymentRequestParams): 
         user_name: params.userName,
         user_phone: params.userPhone,
         amount: params.amount,
-        order_payload: params.orderPayload || null,
+        order_payload: orderPayloadWithToken,
         wallet_payload: params.walletPayload || null,
         subscription_payload: params.subscriptionPayload || null,
+        utr_number: cleanUtr,
+        expo_push_token: pushToken || null,
       }),
     });
 
@@ -55,12 +71,14 @@ export async function submitPaymentRequest(params: SubmitPaymentRequestParams): 
         user_name: params.userName,
         user_phone: params.userPhone,
         amount: params.amount,
-        status: 'pending',
-        order_payload: params.orderPayload || null,
+        status: cleanUtr ? 'utr_submitted' : 'pending',
+        order_payload: orderPayloadWithToken,
         wallet_payload: params.walletPayload || null,
         subscription_payload: params.subscriptionPayload || null,
-        utr_number: null,
-        utr_submitted_at: null,
+        utr_number: cleanUtr,
+        expo_push_token: pushToken || null,
+        fcm_token: pushToken || null,
+        utr_submitted_at: cleanUtr ? now.toISOString() : null,
         created_at: now.toISOString(),
         updated_at: now.toISOString(),
         expires_at: expiresAt.toISOString(),

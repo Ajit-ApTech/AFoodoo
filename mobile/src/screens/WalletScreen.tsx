@@ -8,6 +8,7 @@ import {
   ScrollView,
   Alert,
   ActivityIndicator,
+  TextInput,
 } from 'react-native';
 import { useAppStore } from '../store/appStore';
 import { useTheme } from '../theme/ThemeContext';
@@ -16,10 +17,12 @@ import { firestore } from '../firebaseConfig';
 import { generateUpiUrl } from '../utils/upi';
 import { submitPaymentRequest } from '../api/payments';
 import { UtrModal } from '../components/UtrModal';
+import { UpiPaymentModal } from '../components/UpiPaymentModal';
 
 export default function WalletScreen() {
   const { theme } = useTheme();
   const user = useAppStore(state => state.user);
+  const setUser = useAppStore(state => state.setUser);
   const creditWalletBalance = useAppStore(state => state.creditWalletBalance);
 
   const [topUpLoading, setTopUpLoading] = useState<number | null>(null);
@@ -30,22 +33,63 @@ export default function WalletScreen() {
   const [utrModalVisible, setUtrModalVisible] = useState(false);
   const [selectedReqForUtr, setSelectedReqForUtr] = useState<any>(null);
 
+  // UPI QR Modal State
+  const [showUpiModal, setShowUpiModal] = useState(false);
+  const [activeTopUpAmount, setActiveTopUpAmount] = useState<number | null>(null);
+  const [customQrUrl, setCustomQrUrl] = useState('');
+  const [customAmountText, setCustomAmountText] = useState('');
+
   const currentBalance = user?.wallet_balance ?? 500;
 
-  // Real-time Cloud Firestore subscription for user's wallet transactions
+  // Real-time Cloud Firestore subscription for user's profile and live wallet balance
   useEffect(() => {
     if (!user?.phone && !user?.id) return;
     const cleanPhone = user.phone ? user.phone.trim() : '';
     const userDocId = user.id || `usr_${cleanPhone.replace(/\D/g, '')}`;
 
     try {
+      const unsub = onSnapshot(doc(firestore, 'users', userDocId), (docSnap: any) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          if (data.wallet_balance !== undefined) {
+            setUser({ ...user, ...data });
+          }
+        }
+      });
+      return unsub;
+    } catch (e) {}
+  }, [user?.phone, user?.id]);
+
+  // Real-time Cloud Firestore subscription for user's wallet transactions
+  useEffect(() => {
+    if (!user?.phone && !user?.id) return;
+    const userDigits = (user.phone || '').replace(/\D/g, '');
+    const userDocId = user.id || (userDigits ? `usr_${userDigits}` : '');
+
+    try {
       const unsub = onSnapshot(collection(firestore, 'wallet_transactions'), snap => {
         if (!snap.empty) {
           const list = snap.docs
             .map(d => ({ id: d.id, ...d.data() }))
-            .filter((d: any) => d.user_phone === cleanPhone || d.user_id === userDocId)
-            .sort((a: any, b: any) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+            .filter((d: any) => {
+              const dDigits = (d.user_phone || '').replace(/\D/g, '');
+              const isPhoneMatch =
+                userDigits &&
+                dDigits &&
+                (dDigits.endsWith(userDigits) || userDigits.endsWith(dDigits));
+              const isIdMatch =
+                (d.user_id && (d.user_id === userDocId || d.user_id === user?.id)) ||
+                (userDocId && d.user_id === userDocId);
+              return isPhoneMatch || isIdMatch;
+            })
+            .sort((a: any, b: any) => {
+              const timeA = a.timestamp || a.created_at || '';
+              const timeB = b.timestamp || b.created_at || '';
+              return timeB.localeCompare(timeA);
+            });
           setRealTransactions(list);
+        } else {
+          setRealTransactions([]);
         }
       });
       return unsub;
@@ -55,18 +99,23 @@ export default function WalletScreen() {
   // Real-time subscription to user's payment_requests
   useEffect(() => {
     if (!user?.id && !user?.phone) return;
-    const cleanPhone = user.phone ? user.phone.trim() : '';
-    const userDocId = user.id || `usr_${cleanPhone.replace(/\D/g, '')}`;
+    const userDigits = (user.phone || '').replace(/\D/g, '');
+    const userDocId = user.id || (userDigits ? `usr_${userDigits}` : '');
 
     try {
-      const q = query(
-        collection(firestore, 'payment_requests'),
-        where('user_id', '==', userDocId)
-      );
-      const unsub = onSnapshot(q, snap => {
+      const unsub = onSnapshot(collection(firestore, 'payment_requests'), snap => {
         const list = snap.docs
           .map(d => ({ id: d.id, ...d.data() }))
-          .filter((d: any) => d.type === 'wallet_topup' && ['pending', 'utr_submitted', 'rejected'].includes(d.status))
+          .filter((d: any) => {
+            if (d.type !== 'wallet_topup' || !['pending', 'utr_submitted', 'rejected'].includes(d.status)) {
+              return false;
+            }
+            const dDigits = (d.user_phone || '').replace(/\D/g, '');
+            const isPhoneMatch =
+              userDigits && dDigits && (dDigits.endsWith(userDigits) || userDigits.endsWith(dDigits));
+            const isIdMatch = d.user_id === userDocId || d.user_id === user?.id;
+            return isPhoneMatch || isIdMatch;
+          })
           .sort((a: any, b: any) => (b.created_at || '').localeCompare(a.created_at || ''));
         setPendingRequests(list);
       });
@@ -85,35 +134,43 @@ export default function WalletScreen() {
           const d = snap.data();
           if (d.upi_id) setUpiId(d.upi_id);
           if (d.merchant_name) setMerchantName(d.merchant_name);
+          if (d.upi_qr_image_url) setCustomQrUrl(d.upi_qr_image_url);
         }
       });
       return unsub;
     } catch (e) {}
   }, []);
 
-  const handleTopUp = async (amount: number) => {
+  const handleTopUp = (amount: number) => {
     if (!user) {
       Alert.alert('Authentication Required', 'Please sign in to top up your wallet.');
       return;
     }
+    setActiveTopUpAmount(amount);
+    setShowUpiModal(true);
+  };
 
-    const { Linking } = require('react-native');
-    const upiUrl = generateUpiUrl({
-      upiId: upiId || 'afoodoo@upi',
-      merchantName: merchantName || 'AFoodoo Kitchen',
-      amount: amount,
-      note: `AFoodoo Wallet Topup ₹${amount}`,
-    });
+  const handleCustomTopUp = () => {
+    if (!user) {
+      Alert.alert('Authentication Required', 'Please sign in to top up your wallet.');
+      return;
+    }
+    const cleanAmt = customAmountText.replace(/[^0-9]/g, '');
+    const parsed = parseInt(cleanAmt, 10);
+    if (!parsed || isNaN(parsed) || parsed < 10) {
+      Alert.alert('Invalid Amount', 'Please enter a top-up amount of at least ₹10.');
+      return;
+    }
+    if (parsed > 50000) {
+      Alert.alert('Limit Exceeded', 'Maximum single wallet top-up is ₹50,000.');
+      return;
+    }
+    handleTopUp(parsed);
+  };
 
-    // Open UPI app
-    Linking.openURL(upiUrl).catch(() => {
-      Alert.alert(
-        'UPI Payment',
-        `Please complete the payment of ₹${amount} directly to UPI ID: ${upiId}\n\nOpen Google Pay, PhonePe, Paytm, or BHIM and pay to this ID manually.`
-      );
-    });
-
-    setTopUpLoading(amount);
+  const handleConfirmTopUp = async (utrNumber?: string) => {
+    if (!user || !activeTopUpAmount) return;
+    setTopUpLoading(activeTopUpAmount);
     try {
       const cleanPhone = user.phone ? user.phone.trim() : '';
       const userDocId = user.id || `usr_${cleanPhone.replace(/\D/g, '')}`;
@@ -123,16 +180,18 @@ export default function WalletScreen() {
         userId: userDocId,
         userName: user.name || 'AFoodoo Customer',
         userPhone: cleanPhone,
-        amount: amount,
+        amount: activeTopUpAmount,
+        utrNumber,
         walletPayload: {
-          amount: amount,
-          description: `Wallet Top-Up (+₹${amount})`,
+          amount: activeTopUpAmount,
+          description: `Wallet Top-Up (+₹${activeTopUpAmount})`,
         },
       });
 
+      setShowUpiModal(false);
       Alert.alert(
         'Top-Up Request Sent ⏳',
-        `Your top-up request for ₹${amount.toLocaleString('en-IN')} has been submitted for admin verification.\n\nYour wallet balance will be credited automatically as soon as the admin verifies your payment!`
+        `Your top-up request for ₹${activeTopUpAmount.toLocaleString('en-IN')} has been submitted for admin verification.\n\nYour wallet balance will be credited automatically as soon as the admin verifies your payment!`
       );
     } catch (err: any) {
       Alert.alert('Request Notice', err.message || 'Could not submit top-up request.');
@@ -173,17 +232,22 @@ export default function WalletScreen() {
           <Text style={[styles.legendItem, { color: theme.textPrimary }]}>🔵 Refund</Text>
         </View>
 
-        {/* Quick Top Up Actions */}
-        <Text style={[styles.sectionTitle, { color: theme.textPrimary }]}>Quick Top-Up (Stripe / UPI Stub)</Text>
+        {/* Top Up Actions */}
+        <Text style={[styles.sectionTitle, { color: theme.textPrimary }]}>Top-Up AFoodoo Wallet</Text>
+
+        {/* Quick Amount Chips */}
         <View style={styles.topUpRow}>
-          {[100, 250, 500].map(amount => (
+          {[100, 250, 500, 1000].map(amount => (
             <TouchableOpacity
               key={amount}
               style={[
                 styles.topUpChip,
                 { backgroundColor: theme.surface, borderColor: theme.accentBadgeBg },
               ]}
-              onPress={() => handleTopUp(amount)}
+              onPress={() => {
+                setCustomAmountText(amount.toString());
+                handleTopUp(amount);
+              }}
               disabled={topUpLoading !== null}
             >
               {topUpLoading === amount ? (
@@ -193,6 +257,43 @@ export default function WalletScreen() {
               )}
             </TouchableOpacity>
           ))}
+        </View>
+
+        {/* Custom Manual Amount Box */}
+        <View style={[styles.customAmountCard, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}>
+          <Text style={[styles.customAmountLabel, { color: theme.textSecondary }]}>
+            Or Enter Any Custom Amount
+          </Text>
+          <View style={styles.customAmountInputRow}>
+            <View style={[styles.currencyPrefix, { backgroundColor: theme.inputBg, borderColor: theme.inputBorder }]}>
+              <Text style={[styles.currencyPrefixText, { color: theme.primary }]}>₹</Text>
+            </View>
+            <TextInput
+              style={[
+                styles.customAmountInput,
+                {
+                  backgroundColor: theme.inputBg,
+                  borderColor: theme.inputBorder,
+                  color: theme.inputText || theme.textPrimary,
+                },
+              ]}
+              placeholder="e.g. 350"
+              placeholderTextColor={theme.textMuted}
+              keyboardType="number-pad"
+              maxLength={6}
+              value={customAmountText}
+              onChangeText={setCustomAmountText}
+            />
+            <TouchableOpacity
+              style={[styles.customTopUpBtn, { backgroundColor: theme.primary }]}
+              onPress={handleCustomTopUp}
+              disabled={topUpLoading !== null}
+            >
+              <Text style={styles.customTopUpBtnText}>
+                Top Up →
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* Pending Payment Verification Requests */}
@@ -294,9 +395,19 @@ export default function WalletScreen() {
             </Text>
           ) : (
             realTransactions.map((tx, idx) => {
-              const isCredit = tx.type === 'CREDIT' || tx.type === 'topup' || tx.type === 'plan_credit' || (tx.amount && tx.amount > 0);
+              const typeStr = (tx.type || '').toLowerCase();
+              const isCredit =
+                typeStr === 'credit' ||
+                typeStr === 'topup' ||
+                typeStr === 'plan_credit' ||
+                (typeof tx.amount === 'number' && tx.amount > 0);
               const displayAmt = Math.abs(tx.amount || 0);
-              const txTimeStr = tx.timestamp ? new Date(tx.timestamp).toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' }) : 'Recently';
+              const txTimeStr = tx.timestamp
+                ? new Date(tx.timestamp).toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' })
+                : tx.created_at
+                ? new Date(tx.created_at).toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' })
+                : 'Recently';
+              const txTitle = tx.title || tx.description || tx.reason || 'Wallet Activity';
 
               return (
                 <View key={tx.id || `tx_${idx}`}>
@@ -305,7 +416,7 @@ export default function WalletScreen() {
                       <Text style={styles.txIcon}>{isCredit ? '🟢' : '🔴'}</Text>
                     </View>
                     <View style={styles.txInfo}>
-                      <Text style={[styles.txTitle, { color: theme.textPrimary }]}>{tx.title || tx.reason || 'Wallet Activity'}</Text>
+                      <Text style={[styles.txTitle, { color: theme.textPrimary }]}>{txTitle}</Text>
                       <Text style={[styles.txTime, { color: theme.textSecondary }]}>
                         {txTimeStr}
                       </Text>
@@ -345,6 +456,22 @@ export default function WalletScreen() {
           setUtrModalVisible(false);
           setSelectedReqForUtr(null);
         }}
+      />
+
+      {/* Zero-fee Direct UPI & QR Code Modal */}
+      <UpiPaymentModal
+        visible={showUpiModal}
+        amount={activeTopUpAmount || 0}
+        upiId={upiId}
+        merchantName={merchantName}
+        customQrUrl={customQrUrl}
+        note={`AFoodoo Wallet Top-Up ₹${activeTopUpAmount || 0}`}
+        submitting={topUpLoading != null}
+        onClose={() => {
+          setShowUpiModal(false);
+          setActiveTopUpAmount(null);
+        }}
+        onConfirmPaid={handleConfirmTopUp}
       />
     </SafeAreaView>
   );
@@ -424,5 +551,62 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  customAmountCard: {
+    borderRadius: 16,
+    padding: 14,
+    borderWidth: 1,
+    marginTop: 12,
+  },
+  customAmountLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  customAmountInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  currencyPrefix: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    minHeight: 46,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  currencyPrefixText: {
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  customAmountInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+    fontWeight: '700',
+    minHeight: 46,
+  },
+  customTopUpBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    borderRadius: 10,
+    minHeight: 46,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  customTopUpBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13.5,
+    fontWeight: '800',
   },
 });

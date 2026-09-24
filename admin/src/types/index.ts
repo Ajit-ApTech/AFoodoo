@@ -96,6 +96,7 @@ export interface DeliveryConfig {
   support_hours?: string;
   upi_id?: string;
   merchant_name?: string;
+  upi_qr_image_url?: string;
   enable_cod?: boolean;
   updated_at: string;
 }

@@ -1,10 +1,11 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
-import { db } from '../../../lib/firebase';
+import React, { useEffect, useState, useRef } from 'react';
+import { db, storage } from '../../../lib/firebase';
 import { doc, getDoc, setDoc, addDoc, collection } from 'firebase/firestore';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { DeliveryConfig } from '../../../types';
-import { MapPin, Navigation, Save, Settings2, Truck, Phone, Radius, CheckCircle2, AlertCircle, ExternalLink } from 'lucide-react';
+import { MapPin, Navigation, Save, Settings2, Truck, Phone, Radius, CheckCircle2, AlertCircle, ExternalLink, QrCode, Upload, Trash2, Check, RefreshCw } from 'lucide-react';
 import { buildMapsLink } from '../../../lib/geo';
 
 const DEFAULT_CONFIG: DeliveryConfig = {
@@ -20,6 +21,7 @@ const DEFAULT_CONFIG: DeliveryConfig = {
   support_hours: '8:00 AM - 10:00 PM Daily',
   upi_id: 'afoodoo@upi',
   merchant_name: 'AFoodoo Kitchen',
+  upi_qr_image_url: '',
   enable_cod: true,
   updated_at: '',
 };
@@ -30,6 +32,33 @@ export default function DeliverySettingsPage() {
   const [locating, setLocating] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
+  const [uploadingQr, setUploadingQr] = useState(false);
+  const [qrUploadMsg, setQrUploadMsg] = useState('');
+  const qrFileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleQrUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingQr(true);
+    setQrUploadMsg('');
+    try {
+      const storageRef = ref(storage, `payment_qr/upi_qr_${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.]/g, '')}`);
+      await uploadBytes(storageRef, file);
+      const downloadUrl = await getDownloadURL(storageRef);
+      setConfig(prev => ({ ...prev, upi_qr_image_url: downloadUrl }));
+      setQrUploadMsg('Custom QR image uploaded successfully! Click Save below to apply.');
+    } catch (err: any) {
+      console.error('QR upload failed:', err);
+      setError(`QR image upload failed: ${err.message}. You can also paste an image URL directly.`);
+    } finally {
+      setUploadingQr(false);
+    }
+  };
+
+  const handleClearCustomQr = () => {
+    setConfig(prev => ({ ...prev, upi_qr_image_url: '' }));
+    setQrUploadMsg('Reverted to auto-generated dynamic QR code. Click Save below to apply.');
+  };
 
   // Load settings directly from Cloud Firestore on mount (no local storage)
   useEffect(() => {
@@ -396,12 +425,30 @@ export default function DeliverySettingsPage() {
         </div>
       </div>
 
-      {/* Section E: Zero-Fee Direct UPI & Payment Settings */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-5">
-        <div className="flex items-center gap-2 border-b border-slate-800 pb-4">
-          <Phone className="h-5 w-5 text-purple-400" />
-          <h2 className="text-base font-extrabold text-white">0% Fee Direct UPI Payment Settings</h2>
+      {/* Section E: Zero-Fee Direct UPI & Payment QR Settings */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6">
+        <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+          <div className="flex items-center gap-2">
+            <QrCode className="h-5 w-5 text-purple-400" />
+            <div>
+              <h2 className="text-base font-extrabold text-white">0% Fee Direct UPI & QR Code Settings</h2>
+              <p className="text-xs text-slate-400">
+                Configure your UPI ID and payment QR code shown to customers on the mobile app.
+              </p>
+            </div>
+          </div>
+          <span className="text-[11px] font-bold bg-purple-500/10 text-purple-300 border border-purple-500/30 px-2.5 py-1 rounded-full">
+            Zero Commission · Direct Bank Settlement
+          </span>
         </div>
+
+        {/* Success message for QR upload */}
+        {qrUploadMsg && (
+          <div className="flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-4 py-2.5 text-xs text-emerald-400 font-semibold">
+            <Check className="h-4 w-4 shrink-0" />
+            {qrUploadMsg}
+          </div>
+        )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           <div>
@@ -413,7 +460,7 @@ export default function DeliverySettingsPage() {
               onChange={e => setConfig(prev => ({ ...prev, upi_id: e.target.value }))}
             />
             <p className="text-[11px] text-slate-500 mt-1">
-              Direct NPCI UPI link will open GPay / PhonePe / Paytm to send payments straight to this UPI ID with 0% gateway charges.
+              Payments from customers go directly into your bank account linked to this UPI ID.
             </p>
           </div>
 
@@ -425,6 +472,141 @@ export default function DeliverySettingsPage() {
               value={config.merchant_name || ''}
               onChange={e => setConfig(prev => ({ ...prev, merchant_name: e.target.value }))}
             />
+            <p className="text-[11px] text-slate-500 mt-1">
+              Name displayed to customers inside GPay, PhonePe, Paytm, and BHIM receipts.
+            </p>
+          </div>
+        </div>
+
+        {/* QR Code Section: Live Preview & Custom Upload */}
+        <div className="bg-slate-950 border border-slate-800 rounded-xl p-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <QrCode className="h-4 w-4 text-purple-400" />
+              <h3 className="text-sm font-bold text-slate-200">Customer Payment QR Code</h3>
+            </div>
+            {config.upi_qr_image_url ? (
+              <span className="text-[10px] font-bold bg-amber-500/10 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded-full">
+                Custom Uploaded QR
+              </span>
+            ) : (
+              <span className="text-[10px] font-bold bg-blue-500/10 text-blue-300 border border-blue-500/30 px-2 py-0.5 rounded-full">
+                Auto-Generated Dynamic QR
+              </span>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-center">
+            {/* Live QR Preview Box */}
+            <div className="flex flex-col items-center justify-center p-4 bg-white rounded-2xl shadow-inner w-full max-w-[220px] mx-auto">
+              {config.upi_qr_image_url ? (
+                <img
+                  src={config.upi_qr_image_url}
+                  alt="Custom Store QR"
+                  className="w-44 h-44 object-contain rounded-lg"
+                />
+              ) : config.upi_id ? (
+                <img
+                  src={`https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(
+                    `upi://pay?pa=${(config.upi_id || '').trim()}&pn=${(config.merchant_name || 'AFoodoo Kitchen').trim()}&cu=INR`
+                  )}`}
+                  alt="Dynamic UPI QR"
+                  className="w-44 h-44 object-contain"
+                />
+              ) : (
+                <div className="w-44 h-44 flex flex-col items-center justify-center text-slate-400 text-xs text-center p-2">
+                  <QrCode className="h-10 w-10 text-slate-300 mb-2" />
+                  Enter a UPI ID above to generate QR
+                </div>
+              )}
+              <div className="mt-2 text-center">
+                <p className="text-[11px] font-extrabold text-slate-900 tracking-tight">
+                  {config.merchant_name || 'AFoodoo Kitchen'}
+                </p>
+                <p className="text-[10px] text-slate-500 font-mono">
+                  {config.upi_id || 'Enter UPI ID'}
+                </p>
+              </div>
+            </div>
+
+            {/* QR Management Controls */}
+            <div className="md:col-span-2 space-y-4">
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+                <h4 className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                  <span>Option 1: Auto-Generated Dynamic QR (Recommended)</span>
+                </h4>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Generated automatically from your UPI ID (<span className="text-purple-300 font-mono">{config.upi_id || 'afoodoo@upi'}</span>).
+                  In the mobile app, the exact order amount (e.g. ₹299) is automatically embedded into this QR for the customer!
+                </p>
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                    <span>Option 2: Upload Custom Store / Standee QR Image</span>
+                  </h4>
+                  {config.upi_qr_image_url && (
+                    <button
+                      type="button"
+                      onClick={handleClearCustomQr}
+                      className="text-[11px] text-rose-400 hover:text-rose-300 flex items-center gap-1 font-semibold transition-colors"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                      Remove & Use Dynamic
+                    </button>
+                  )}
+                </div>
+                <p className="text-xs text-slate-400">
+                  Have a printed QR standee from PhonePe, Google Pay Business, or Paytm? Upload the photo here:
+                </p>
+
+                <div className="flex items-center gap-3">
+                  <input
+                    type="file"
+                    ref={qrFileInputRef}
+                    accept="image/*"
+                    onChange={handleQrUpload}
+                    className="hidden"
+                  />
+                  <button
+                    type="button"
+                    disabled={uploadingQr}
+                    onClick={() => qrFileInputRef.current?.click()}
+                    className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-xs font-bold px-3.5 py-2 rounded-xl transition-all border border-slate-700"
+                  >
+                    <Upload className="h-3.5 w-3.5 text-purple-400" />
+                    {uploadingQr ? 'Uploading QR...' : 'Upload QR Image'}
+                  </button>
+                  {config.upi_qr_image_url && (
+                    <span className="text-[11px] text-emerald-400 font-semibold flex items-center gap-1">
+                      <Check className="h-3.5 w-3.5" /> Custom QR Active
+                    </span>
+                  )}
+                </div>
+
+                <div className="pt-2">
+                  <label className="text-[10px] text-slate-500 font-semibold block mb-1">
+                    Or Paste Direct Image URL:
+                  </label>
+                  <input
+                    type="url"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-300 placeholder-slate-600 focus:outline-none focus:border-purple-500"
+                    placeholder="https://.../my_store_qr.png"
+                    value={config.upi_qr_image_url || ''}
+                    onChange={e => setConfig(prev => ({ ...prev, upi_qr_image_url: e.target.value }))}
+                  />
+                </div>
+              </div>
+
+              {/* Live Test Notice */}
+              <div className="flex items-start gap-2 bg-purple-950/30 border border-purple-800/40 rounded-xl p-3 text-[11px] text-purple-300">
+                <span className="text-base shrink-0">📱</span>
+                <div>
+                  <strong className="text-white">Test right now:</strong> Open the camera app on your phone and point it at the QR code on the left. It will recognize the payment link and let you test pay ₹1 to verify!
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 

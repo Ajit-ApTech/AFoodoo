@@ -15,6 +15,7 @@ import { fetchSubscriptions, pauseSubscription, createSubscription } from '../ap
 import { submitPaymentRequest } from '../api/payments';
 import dayjs from 'dayjs';
 import { useTheme } from '../theme/ThemeContext';
+import { UpiPaymentModal } from '../components/UpiPaymentModal';
 
 // Wallet credit amounts credited when a plan is purchased.
 const PLAN_WALLET_CREDITS: Record<string, number> = {
@@ -137,6 +138,8 @@ export default function SubscriptionScreen({ navigation }: any) {
   // Read live UPI ID from Cloud Firestore settings/delivery_config
   const [upiId, setUpiId] = useState('afoodoo@upi');
   const [merchantName, setMerchantName] = useState('AFoodoo Kitchen');
+  const [customQrUrl, setCustomQrUrl] = useState('');
+  const [showUpiModal, setShowUpiModal] = useState(false);
 
   useEffect(() => {
     try {
@@ -147,35 +150,23 @@ export default function SubscriptionScreen({ navigation }: any) {
           const d = snap.data();
           if (d.upi_id) setUpiId(d.upi_id);
           if (d.merchant_name) setMerchantName(d.merchant_name);
+          if (d.upi_qr_image_url) setCustomQrUrl(d.upi_qr_image_url);
         }
       });
       return unsub;
     } catch (e) {}
   }, []);
 
-  const handleSubscribe = async () => {
+  const handleSubscribe = () => {
     if (!user) {
       Alert.alert('Login Required', 'Please sign in to buy a subscription pack.');
       return;
     }
+    setShowUpiModal(true);
+  };
 
-    const { generateUpiUrl } = require('../utils/upi');
-    const { Linking } = require('react-native');
-    const upiUrl = generateUpiUrl({
-      upiId: upiId || 'afoodoo@upi',
-      merchantName: merchantName || 'AFoodoo Kitchen',
-      amount: selectedPlan.price,
-      note: `AFoodoo Plan — ${selectedPlan.title}`,
-    });
-
-    // Open UPI app
-    Linking.openURL(upiUrl).catch(() => {
-      Alert.alert(
-        'UPI Payment',
-        `Please complete the payment of ₹${selectedPlan.price} directly to UPI ID: ${upiId}\n\nOpen Google Pay, PhonePe, Paytm, or BHIM and pay to this ID manually.`
-      );
-    });
-
+  const handleConfirmSubscription = async (utrNumber?: string) => {
+    if (!user) return;
     setLoading(true);
     try {
       const cleanPhone = user.phone ? user.phone.trim() : '';
@@ -189,6 +180,7 @@ export default function SubscriptionScreen({ navigation }: any) {
         userName: user.name || `Customer (${cleanPhone})`,
         userPhone: cleanPhone,
         amount: selectedPlan.price,
+        utrNumber,
         subscriptionPayload: {
           plan_title: selectedPlan.title,
           meals: selectedPlan.meals,
@@ -198,6 +190,7 @@ export default function SubscriptionScreen({ navigation }: any) {
         },
       });
 
+      setShowUpiModal(false);
       Alert.alert(
         'Subscription Request Sent ⏳',
         `Your subscription request for ${selectedPlan.title} (₹${selectedPlan.price}) has been submitted for admin verification.\n\nYour plan and ₹${creditAmount.toLocaleString('en-IN')} wallet bonus will be activated as soon as the admin verifies your payment!`
@@ -418,6 +411,19 @@ export default function SubscriptionScreen({ navigation }: any) {
           )}
         </TouchableOpacity>
       </ScrollView>
+
+      {/* Zero-fee Direct UPI & QR Code Modal */}
+      <UpiPaymentModal
+        visible={showUpiModal}
+        amount={selectedPlan.price}
+        upiId={upiId}
+        merchantName={merchantName}
+        customQrUrl={customQrUrl}
+        note={`AFoodoo Plan — ${selectedPlan.title}`}
+        submitting={loading}
+        onClose={() => setShowUpiModal(false)}
+        onConfirmPaid={handleConfirmSubscription}
+      />
     </SafeAreaView>
   );
 }

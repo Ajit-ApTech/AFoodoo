@@ -21,12 +21,12 @@ try {
 }
 
 /**
- * Configure Android notification channel with MAX importance for status bar heads-up popups
+ * Configure Android notification channels with MAX importance for status bar heads-up popups
  */
 export async function setupNotificationChannel() {
   if (!Notifications || Platform.OS !== 'android') return;
   try {
-    await Notifications.setNotificationChannelAsync('order_updates', {
+    const channelConfig = {
       name: 'AFoodoo Order Updates 🍲',
       importance: Notifications.AndroidImportance.MAX,
       vibrationPattern: [0, 250, 250, 250],
@@ -36,8 +36,36 @@ export async function setupNotificationChannel() {
       showBadge: true,
       lockscreenVisibility: Notifications.AndroidNotificationVisibility?.PUBLIC,
       bypassDnd: true,
+    };
+    await Notifications.setNotificationChannelAsync('order_updates', channelConfig);
+    await Notifications.setNotificationChannelAsync('default', {
+      ...channelConfig,
+      name: 'AFoodoo Notifications',
     });
   } catch (e) {}
+}
+
+if (Notifications && Platform.OS === 'android') {
+  setupNotificationChannel().catch(() => {});
+}
+
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+let cachedPushToken: string | null = null;
+
+// Synchronously or asynchronously retrieve cached token for instant attachment to orders
+export async function getCachedPushToken(): Promise<string | null> {
+  if (cachedPushToken) return cachedPushToken;
+  try {
+    cachedPushToken = await AsyncStorage.getItem('@cached_expo_push_token');
+    return cachedPushToken;
+  } catch (e) {
+    return null;
+  }
+}
+
+export function getCachedPushTokenSync(): string | null {
+  return cachedPushToken;
 }
 
 /**
@@ -74,16 +102,33 @@ export async function registerForPushNotificationsAsync(userId?: string): Promis
       } catch (devErr) {}
     }
 
+    if (token) {
+      cachedPushToken = token;
+      AsyncStorage.setItem('@cached_expo_push_token', token).catch(() => {});
+    }
+
     // Sync Push Token to user document in Cloud Firestore for background push delivery
     if (token && userId) {
       try {
         const { doc, setDoc } = require('firebase/firestore');
         const { firestore } = require('../firebaseConfig');
-        await setDoc(
-          doc(firestore, 'users', userId),
-          { expo_push_token: token, updated_at: new Date().toISOString() },
-          { merge: true }
-        );
+        const tokenPayload = {
+          expo_push_token: token,
+          fcm_token: token,
+          push_token: token,
+          updated_at: new Date().toISOString(),
+        };
+
+        // Save under provided userId
+        await setDoc(doc(firestore, 'users', userId), tokenPayload, { merge: true });
+
+        // Normalize phone digits to also update alternate format (e.g., usr_9876543210 and usr_919876543210)
+        const digits = userId.replace(/\D/g, '');
+        if (digits.length === 10) {
+          await setDoc(doc(firestore, 'users', `usr_91${digits}`), tokenPayload, { merge: true }).catch(() => {});
+        } else if (digits.length === 12 && digits.startsWith('91')) {
+          await setDoc(doc(firestore, 'users', `usr_${digits.slice(2)}`), tokenPayload, { merge: true }).catch(() => {});
+        }
       } catch (e) {}
     }
 

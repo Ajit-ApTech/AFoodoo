@@ -18,6 +18,8 @@ import { useTheme } from '../theme/ThemeContext';
 import { haversineDistance, buildMapsLink } from '../utils/geo';
 import { generateUpiUrl } from '../utils/upi';
 import { Linking } from 'react-native';
+import { UpiPaymentModal } from '../components/UpiPaymentModal';
+import { getCachedPushToken } from '../services/notificationService';
 
 export default function BookingScreen({ route, navigation }: any) {
   const { theme } = useTheme();
@@ -48,8 +50,11 @@ export default function BookingScreen({ route, navigation }: any) {
   const [paymentMethod, setPaymentMethod] = useState<'upi' | 'wallet' | 'cod'>('upi');
   const [upiId, setUpiId] = useState('afoodoo@upi');
   const [merchantName, setMerchantName] = useState('AFoodoo Kitchen');
+  const [customQrUrl, setCustomQrUrl] = useState('');
   const [enableCod, setEnableCod] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [showUpiModal, setShowUpiModal] = useState(false);
+  const [pendingUpiPayload, setPendingUpiPayload] = useState<any>(null);
 
   // Read live UPI ID & Payment settings from Cloud Firestore settings/delivery_config
   React.useEffect(() => {
@@ -61,6 +66,7 @@ export default function BookingScreen({ route, navigation }: any) {
           const d = snap.data();
           if (d.upi_id) setUpiId(d.upi_id);
           if (d.merchant_name) setMerchantName(d.merchant_name);
+          if (d.upi_qr_image_url) setCustomQrUrl(d.upi_qr_image_url);
           if (d.enable_cod != null) setEnableCod(d.enable_cod);
         }
       });
@@ -120,6 +126,60 @@ export default function BookingScreen({ route, navigation }: any) {
     setLocating(false);
   };
 
+  const handleConfirmUpiPayment = async (utrNumber?: string) => {
+    if (!pendingUpiPayload) return;
+    setSubmitting(true);
+    try {
+      const result = await submitPaymentRequest({
+        type: 'order',
+        userId: pendingUpiPayload.userId,
+        userName: user?.name || pendingUpiPayload.receiverName || 'AFoodoo Customer',
+        userPhone: user?.phone || pendingUpiPayload.receiverPhone || '+91 98765 43210',
+        amount: pendingUpiPayload.price,
+        utrNumber,
+        orderPayload: {
+          menu_item_id: item.id,
+          menu_title: item.title,
+          meal_slot_id: pendingUpiPayload.slotId,
+          slot_name: activeSlot?.name || 'Lunch Tiffin',
+          delivery_window: activeSlot?.delivery_start_time && activeSlot?.delivery_end_time
+            ? `${activeSlot.delivery_start_time} – ${activeSlot.delivery_end_time}`
+            : activeSlot?.name?.toLowerCase().includes('dinner')
+            ? '7:30 PM – 8:30 PM'
+            : '1:00 PM – 2:00 PM',
+          delivery_address: pendingUpiPayload.deliveryAddress,
+          receiver_name: pendingUpiPayload.receiverName,
+          receiver_phone: pendingUpiPayload.receiverPhone,
+          delivery_lat: pendingUpiPayload.detectedLat,
+          delivery_lng: pendingUpiPayload.detectedLng,
+          maps_link: pendingUpiPayload.mapsLink,
+          delivery_distance_km: pendingUpiPayload.deliveryDistanceKm,
+          price: pendingUpiPayload.price,
+        },
+      });
+
+      setShowUpiModal(false);
+      setSubmitting(false);
+      Alert.alert(
+        'Payment Request Submitted ⏳',
+        `Your order verification request for ₹${item.price} has been sent to our kitchen team.\n\nOnce admin verifies the payment, your order will be confirmed!`,
+        [
+          {
+            text: 'Track Order',
+            onPress: () => navigation.navigate('OrderTracking', { orderId: result.payment_request_id }),
+          },
+          {
+            text: 'OK',
+            onPress: () => navigation.navigate('Home'),
+          },
+        ]
+      );
+    } catch (err: any) {
+      setSubmitting(false);
+      Alert.alert('Payment Request Error', err.message || 'Could not submit payment request.');
+    }
+  };
+
   const handleConfirmOrder = async () => {
     if (item.is_available === false) {
       Alert.alert('Item Sold Out 🔒', 'Sorry, this meal has been marked as sold out by admin and cannot be ordered.');
@@ -146,21 +206,6 @@ export default function BookingScreen({ route, navigation }: any) {
     if (paymentMethod === 'wallet' && !isWalletSufficient) {
       Alert.alert('Insufficient Balance', 'Please top up your AFoodoo Wallet or choose Direct UPI / Cash on Delivery.');
       return;
-    }
-
-    if (paymentMethod === 'upi') {
-      const upiUrl = generateUpiUrl({
-        upiId: upiId || 'afoodoo@upi',
-        merchantName: merchantName || 'AFoodoo Kitchen',
-        amount: item.price,
-        note: `AFoodoo Order — ${item.title}`,
-      });
-      Linking.openURL(upiUrl).catch(() => {
-        Alert.alert(
-          'UPI App Required 📱',
-          `Please install a UPI app (Google Pay, PhonePe, Paytm, BHIM) or pay directly to UPI ID: ${upiId}`
-        );
-      });
     }
 
     // Delivery range check — read kitchen GPS strictly from Cloud Firestore settings/delivery_config
@@ -191,7 +236,6 @@ export default function BookingScreen({ route, navigation }: any) {
       }
     }
 
-    setSubmitting(true);
     const slotId = activeSlot?.id || 'slot_lunch_today';
     const userId = user?.id || 'demo-user-123';
     const otpCode = Math.floor(1000 + Math.random() * 9000).toString();
@@ -257,65 +301,36 @@ export default function BookingScreen({ route, navigation }: any) {
       }
     }
 
-    // Handle UPI payments via two-stage admin confirmation flow
+    const devicePushToken = (await getCachedPushToken()) || (user as any)?.expo_push_token || (user as any)?.fcm_token || '';
+
+    // Handle UPI payments: Show payment QR modal first without creating premature requests
     if (paymentMethod === 'upi') {
-      try {
-        const result = await submitPaymentRequest({
-          type: 'order',
-          userId,
-          userName: user?.name || receiverName.trim() || 'AFoodoo Customer',
-          userPhone: user?.phone || receiverPhone.trim() || '+91 98765 43210',
-          amount: Number(item.price || 199),
-          orderPayload: {
-            menu_item_id: item.id,
-            menu_title: item.title,
-            meal_slot_id: slotId,
-            slot_name: activeSlot?.name || 'Lunch Tiffin',
-            delivery_window: activeSlot?.delivery_start_time && activeSlot?.delivery_end_time
-              ? `${activeSlot.delivery_start_time} – ${activeSlot.delivery_end_time}`
-              : activeSlot?.name?.toLowerCase().includes('dinner')
-              ? '7:30 PM – 8:30 PM'
-              : '1:00 PM – 2:00 PM',
-            delivery_address: deliveryAddress,
-            receiver_name: receiverName.trim(),
-            receiver_phone: receiverPhone.trim(),
-            delivery_lat: detectedLat,
-            delivery_lng: detectedLng,
-            maps_link: mapsLink,
-            delivery_distance_km: deliveryDistanceKm,
-            price: Number(item.price || 199),
-          },
-        });
-
-        setSubmitting(false);
-        Alert.alert(
-          'Payment Request Submitted ⏳',
-          `Your order verification request for ₹${item.price} has been sent to our kitchen team.\n\nOnce admin verifies the payment, your order will be confirmed!`,
-          [
-            {
-              text: 'Track Order',
-              onPress: () => navigation.navigate('OrderTracking', { orderId: result.payment_request_id }),
-            },
-            {
-              text: 'OK',
-              onPress: () => navigation.navigate('Home'),
-            },
-          ]
-        );
-        return;
-      } catch (err: any) {
-        setSubmitting(false);
-        Alert.alert('Payment Request Error', err.message || 'Could not submit payment request.');
-        return;
-      }
-
+      setPendingUpiPayload({
+        userId,
+        receiverName: receiverName.trim(),
+        receiverPhone: receiverPhone.trim(),
+        slotId,
+        deliveryAddress,
+        detectedLat,
+        detectedLng,
+        mapsLink,
+        deliveryDistanceKm,
+        price: Number(item.price || 199),
+        expoPushToken: devicePushToken,
+      });
+      setShowUpiModal(true);
+      return;
     }
+
+    setSubmitting(true);
 
     // Direct instant booking for Wallet & COD payments
     const orderData: any = {
       user_id: userId,
       user_name: user?.name || 'AFoodoo Customer',
       user_phone: user?.phone || '+91 98765 43210',
+      expo_push_token: devicePushToken,
+      fcm_token: devicePushToken,
       menu_item_id: item.id,
       menu_title: item.title,
       meal_slot_id: slotId,
@@ -657,6 +672,19 @@ export default function BookingScreen({ route, navigation }: any) {
           )}
         </TouchableOpacity>
       </ScrollView>
+
+      {/* Zero-fee Direct UPI & QR Code Payment Modal */}
+      <UpiPaymentModal
+        visible={showUpiModal}
+        amount={Number(item.price || 199)}
+        upiId={upiId}
+        merchantName={merchantName}
+        customQrUrl={customQrUrl}
+        note={`AFoodoo Order — ${item.title}`}
+        submitting={submitting}
+        onClose={() => setShowUpiModal(false)}
+        onConfirmPaid={handleConfirmUpiPayment}
+      />
     </SafeAreaView>
   );
 }

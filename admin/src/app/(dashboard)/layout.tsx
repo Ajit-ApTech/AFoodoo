@@ -29,12 +29,20 @@ import { db } from '../../lib/firebase';
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { user, logout } = useAuth();
+  const { user, loading, logout } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [pendingPaymentsCount, setPendingPaymentsCount] = useState(0);
 
+  // Route protection: redirect to /login if user is unauthenticated
+  React.useEffect(() => {
+    if (!loading && !user) {
+      router.replace('/login');
+    }
+  }, [user, loading, router]);
+
   // Real-time listener for pending payment requests count
   React.useEffect(() => {
+    if (!user) return;
     try {
       const q = query(
         collection(db, 'payment_requests'),
@@ -51,12 +59,27 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       );
       return unsub;
     } catch (e) {}
-  }, []);
+  }, [user]);
 
   const handleLogout = () => {
     logout();
-    router.push('/login');
+    router.replace('/login');
   };
+
+  // While checking session, show a sleek loading state to avoid flashing content
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center space-y-4">
+        <div className="h-10 w-10 border-2 border-orange-500 border-t-transparent rounded-full animate-spin"></div>
+        <p className="text-xs text-slate-400 font-semibold tracking-wider uppercase">Verifying session...</p>
+      </div>
+    );
+  }
+
+  // If unauthenticated, do not render any dashboard UI while redirecting
+  if (!user) {
+    return null;
+  }
 
   const navItems = [
     {

@@ -44,13 +44,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const stored = localStorage.getItem('afoodoo_admin_user');
     if (stored) {
       try {
-        setUser(JSON.parse(stored));
+        const parsed = JSON.parse(stored);
+        if (parsed && parsed.email) {
+          setUser(parsed);
+        } else {
+          setUser(null);
+        }
       } catch (e) {
-        setUser(DEFAULT_SUPER_ADMIN);
+        setUser(null);
       }
     } else {
-      setUser(DEFAULT_SUPER_ADMIN);
-      localStorage.setItem('afoodoo_admin_user', JSON.stringify(DEFAULT_SUPER_ADMIN));
+      setUser(null);
     }
     setLoading(false);
   }, []);

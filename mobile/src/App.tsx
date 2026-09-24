@@ -42,7 +42,7 @@ function MainNavigator() {
     return () => {
       if (unsubscribePush) unsubscribePush();
     };
-  }, [user?.phone]);
+  }, [user?.phone, user?.id]);
 
   const navTheme = isDark
     ? {

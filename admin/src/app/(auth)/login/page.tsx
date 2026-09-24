@@ -1,24 +1,46 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '../../../context/AuthContext';
 import { AdminRole } from '../../../types';
-import { ShieldCheck, Utensils, Truck, Lock, UserCheck } from 'lucide-react';
+import { ShieldCheck, Utensils, Truck, Lock, UserCheck, AlertCircle } from 'lucide-react';
 
 export default function LoginPage() {
   const router = useRouter();
-  const { login } = useAuth();
-  const [email, setEmail] = useState('admin@afoodoo.com');
-  const [password, setPassword] = useState('AdminPass123!');
+  const { user, login } = useAuth();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [role, setRole] = useState<AdminRole>('super_admin');
+  const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // If already authenticated, redirect to dashboard
+  useEffect(() => {
+    if (user) {
+      router.replace('/');
+    }
+  }, [user, router]);
 
   const handleSignIn = (e: React.FormEvent) => {
     e.preventDefault();
+    setError('');
+
+    const expectedPassword = process.env.NEXT_PUBLIC_ADMIN_PASSWORD || 'Admin@7879';
+
+    if (!email.trim()) {
+      setError('Please enter your admin email address.');
+      return;
+    }
+
+    if (password !== expectedPassword) {
+      setError('Invalid admin passcode. Access denied.');
+      return;
+    }
+
     setLoading(true);
     setTimeout(() => {
-      login(email, role);
+      login(email.trim(), role);
       router.push('/');
     }, 400);
   };
@@ -31,7 +53,7 @@ export default function LoginPage() {
     };
     setRole(targetRole);
     setEmail(emails[targetRole]);
-    setPassword('AdminPass123!');
+    setError('');
   };
 
   return (
@@ -99,6 +121,13 @@ export default function LoginPage() {
 
         {/* Login Form */}
         <form className="mt-6 space-y-5" onSubmit={handleSignIn}>
+          {error ? (
+            <div className="bg-rose-500/10 border border-rose-500/30 rounded-xl p-3.5 text-xs text-rose-400 flex items-center gap-2.5">
+              <AlertCircle className="h-4 w-4 shrink-0 text-rose-400" />
+              <span className="font-semibold">{error}</span>
+            </div>
+          ) : null}
+
           <div>
             <label className="block text-xs font-medium text-slate-300 mb-1">
               Admin Email Address

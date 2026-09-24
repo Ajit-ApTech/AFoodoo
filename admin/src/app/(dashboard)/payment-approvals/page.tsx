@@ -144,13 +144,15 @@ export default function PaymentApprovalsPage() {
           updated_at: now,
         });
         await addDoc(collection(db, 'wallet_transactions'), {
-          user_id: req.user_id,
+          user_id: userDocId,
           user_phone: req.user_phone,
+          title: `Wallet Top-Up via Direct UPI (+₹${req.amount})`,
+          description: `UPI Wallet Top-Up — Admin Verified`,
           amount: req.amount,
           type: 'credit',
-          description: `UPI Wallet Top-Up — Admin Verified`,
-          payment_request_id: req.id,
+          timestamp: now,
           created_at: now,
+          payment_request_id: req.id,
         });
 
       } else if (req.type === 'subscription' && req.subscription_payload) {
@@ -158,7 +160,7 @@ export default function PaymentApprovalsPage() {
         const userDigits = (req.user_phone || '').replace(/\D/g, '');
         const userDocId = req.user_id || `usr_${userDigits}`;
         const subRef = await addDoc(collection(db, 'subscriptions'), {
-          user_id: req.user_id,
+          user_id: req.user_id || userDocId,
           user_phone: req.user_phone,
           plan_id: sp.plan_id,
           plan_title: sp.plan_title,
@@ -184,12 +186,14 @@ export default function PaymentApprovalsPage() {
             updated_at: now,
           });
           await addDoc(collection(db, 'wallet_transactions'), {
-            user_id: req.user_id,
+            user_id: userDocId,
             user_phone: req.user_phone,
             amount: bonus,
             type: 'credit',
+            title: `Subscription Bonus — ${sp.plan_title}`,
             description: `Subscription Bonus — ${sp.plan_title}`,
             subscription_id: subRef.id,
+            timestamp: now,
             created_at: now,
           });
         }
@@ -206,13 +210,33 @@ export default function PaymentApprovalsPage() {
 
       // 4. Push notification to customer
       try {
-        const { getDoc: fsGet, doc: fsDoc } = await import('firebase/firestore');
-        const userDigits = (req.user_phone || '').replace(/\D/g, '');
-        const userDocId = req.user_id || `usr_${userDigits}`;
-        const userSnap = await fsGet(fsDoc(db, 'users', userDocId));
-        const token = userSnap.exists()
-          ? userSnap.data().expo_push_token || userSnap.data().fcm_token
-          : null;
+        let token = (req as any).expo_push_token || (req as any).fcm_token || null;
+        if (!token) {
+          const { getDoc: fsGet, doc: fsDoc } = await import('firebase/firestore');
+          const userDigits = (req.user_phone || '').replace(/\D/g, '');
+          const userDocId = req.user_id || (userDigits ? `usr_${userDigits}` : '');
+          if (userDocId) {
+            const userSnap = await fsGet(fsDoc(db, 'users', userDocId));
+            if (userSnap.exists()) {
+              token = userSnap.data()?.expo_push_token || userSnap.data()?.fcm_token || null;
+            }
+          }
+          if (!token && userDigits) {
+            const altId =
+              userDigits.length === 10
+                ? `usr_91${userDigits}`
+                : userDigits.startsWith('91') && userDigits.length === 12
+                ? `usr_${userDigits.slice(2)}`
+                : null;
+            if (altId) {
+              const altSnap = await fsGet(fsDoc(db, 'users', altId));
+              if (altSnap.exists()) {
+                token = altSnap.data()?.expo_push_token || altSnap.data()?.fcm_token || null;
+              }
+            }
+          }
+        }
+
         if (token) {
           await sendExpoPushNotification(
             [token],
@@ -266,13 +290,36 @@ export default function PaymentApprovalsPage() {
 
       // Push notification to customer
       try {
-        const { getDoc: fsGet, doc: fsDoc } = await import('firebase/firestore');
-        const userDigits = (selectedReqForReject.user_phone || '').replace(/\D/g, '');
-        const userDocId = selectedReqForReject.user_id || `usr_${userDigits}`;
-        const userSnap = await fsGet(fsDoc(db, 'users', userDocId));
-        const token = userSnap.exists()
-          ? userSnap.data().expo_push_token || userSnap.data().fcm_token
-          : null;
+        let token =
+          (selectedReqForReject as any).expo_push_token ||
+          (selectedReqForReject as any).fcm_token ||
+          null;
+        if (!token) {
+          const { getDoc: fsGet, doc: fsDoc } = await import('firebase/firestore');
+          const userDigits = (selectedReqForReject.user_phone || '').replace(/\D/g, '');
+          const userDocId = selectedReqForReject.user_id || (userDigits ? `usr_${userDigits}` : '');
+          if (userDocId) {
+            const userSnap = await fsGet(fsDoc(db, 'users', userDocId));
+            if (userSnap.exists()) {
+              token = userSnap.data()?.expo_push_token || userSnap.data()?.fcm_token || null;
+            }
+          }
+          if (!token && userDigits) {
+            const altId =
+              userDigits.length === 10
+                ? `usr_91${userDigits}`
+                : userDigits.startsWith('91') && userDigits.length === 12
+                ? `usr_${userDigits.slice(2)}`
+                : null;
+            if (altId) {
+              const altSnap = await fsGet(fsDoc(db, 'users', altId));
+              if (altSnap.exists()) {
+                token = altSnap.data()?.expo_push_token || altSnap.data()?.fcm_token || null;
+              }
+            }
+          }
+        }
+
         if (token) {
           await sendExpoPushNotification(
             [token],

@@ -37,11 +37,12 @@ export default function HomeScreen({ navigation }: any) {
 
     try {
       const { registerForPushNotificationsAsync } = require('../services/notificationService');
-      registerForPushNotificationsAsync().then((token: string | null) => {
+      registerForPushNotificationsAsync(userDocId).then((token: string | null) => {
         if (token) {
           const { doc, updateDoc } = require('firebase/firestore');
           updateDoc(doc(firestore, 'users', userDocId), {
             fcm_token: token,
+            expo_push_token: token,
             last_push_sync: new Date().toISOString(),
           }).catch(() => {});
         }
@@ -253,7 +254,7 @@ export default function HomeScreen({ navigation }: any) {
     return () => clearInterval(timer);
   }, []);
 
-  // Helper to parse time strings like "10:30 PM" or Date objects into dayjs for today
+  // Helper to parse time strings like "10:30 PM", ISO strings, or Date objects into dayjs
   const parseTimeToDayjs = (timeVal: any): dayjs.Dayjs | null => {
     if (!timeVal) return null;
     if (timeVal instanceof Date) return dayjs(timeVal);
@@ -268,8 +269,30 @@ export default function HomeScreen({ navigation }: any) {
         if (ampm === 'AM' && hours === 12) hours = 0;
         return dayjs().set('hour', hours).set('minute', minutes).set('second', 0);
       }
+      // Support ISO string or standard date-time string if cutoff specifies a full date/time
+      const parsed = dayjs(timeVal);
+      if (parsed.isValid()) return parsed;
     }
     return null;
+  };
+
+  // Format remaining time compactly (e.g. 1d 14h 2m 30s, 4h 43m 40s, 25m 12s)
+  const formatCountdown = (diffMs: number): string => {
+    if (diffMs <= 0) return 'Cutoff Passed';
+
+    const totalSecs = Math.floor(diffMs / 1000);
+    const days = Math.floor(totalSecs / 86400);
+    const hours = Math.floor((totalSecs % 86400) / 3600);
+    const mins = Math.floor((totalSecs % 3600) / 60);
+    const secs = totalSecs % 60;
+
+    const parts: string[] = [];
+    if (days > 0) parts.push(`${days}d`);
+    if (hours > 0 || days > 0) parts.push(`${hours}h`);
+    if (mins > 0 || hours > 0 || days > 0) parts.push(`${mins}m`);
+    parts.push(`${secs < 10 && (mins > 0 || hours > 0 || days > 0) ? '0' : ''}${secs}s`);
+
+    return parts.join(' ');
   };
 
   return (
@@ -326,14 +349,12 @@ export default function HomeScreen({ navigation }: any) {
 
             const cutoffDayjs = parseTimeToDayjs(cutoffStr);
             let slotOpen = true;
-            let countdownStr = '41m 49s';
+            let countdownStr = 'Closed';
 
             if (cutoffDayjs) {
               const diffMs = cutoffDayjs.diff(nowTime);
               if (diffMs > 0) {
-                const mins = Math.floor(diffMs / 60000);
-                const secs = Math.floor((diffMs % 60000) / 1000);
-                countdownStr = `${mins}m ${secs < 10 ? '0' : ''}${secs}s`;
+                countdownStr = formatCountdown(diffMs);
                 slotOpen = true;
               } else {
                 countdownStr = 'Cutoff Passed';
@@ -407,7 +428,11 @@ export default function HomeScreen({ navigation }: any) {
                   <Text style={[styles.timerLabel, { color: theme.textMuted }]}>Booking Closes In</Text>
                   <View style={styles.timerRow}>
                     <Text style={styles.timerEmoji}>⌛</Text>
-                    <Text style={[styles.timerValue, { color: theme.primary }]}>
+                    <Text
+                      style={[styles.timerValue, { color: theme.primary }]}
+                      numberOfLines={1}
+                      adjustsFontSizeToFit={true}
+                    >
                       {countdownStr}
                     </Text>
                   </View>
@@ -634,14 +659,17 @@ const styles = StyleSheet.create({
   timerRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    maxWidth: '100%',
   },
   timerEmoji: {
     fontSize: 20,
     marginRight: 6,
   },
   timerValue: {
-    fontSize: 26,
+    fontSize: 22,
     fontWeight: '800',
+    letterSpacing: 0.3,
   },
   primaryButton: {
     paddingVertical: 14,

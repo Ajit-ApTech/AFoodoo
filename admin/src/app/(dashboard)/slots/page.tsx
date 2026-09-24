@@ -2,9 +2,9 @@
 
 import React, { useEffect, useState } from 'react';
 import { db } from '../../../lib/firebase';
-import { collection, onSnapshot, doc, updateDoc, addDoc } from 'firebase/firestore';
+import { collection, onSnapshot, doc, updateDoc, addDoc, deleteDoc } from 'firebase/firestore';
 import { MealSlot } from '../../../types';
-import { Clock, Plus, Check, Power, AlertCircle } from 'lucide-react';
+import { Clock, Plus, Check, Power, AlertCircle, Trash2 } from 'lucide-react';
 
 export default function MealSlotsPage() {
   const [slots, setSlots] = useState<MealSlot[]>([]);
@@ -20,12 +20,11 @@ export default function MealSlotsPage() {
   useEffect(() => {
     try {
       const unsub = onSnapshot(collection(db, 'meal_slots'), snap => {
-        if (!snap.empty) {
-          const items = snap.docs.map(
-            d => ({ id: d.id, ...d.data() } as MealSlot)
-          );
-          setSlots(items);
-        }
+        const slotMap = new Map<string, MealSlot>();
+        snap.docs.forEach(d => {
+          slotMap.set(d.id, { id: d.id, ...d.data() } as MealSlot);
+        });
+        setSlots(Array.from(slotMap.values()));
       });
       return unsub;
     } catch (e) {
@@ -42,6 +41,24 @@ export default function MealSlotsPage() {
       setSlots(prev =>
         prev.map(s => (s.id === slotId ? { ...s, active: !currentActive } : s))
       );
+    }
+  };
+
+  const handleDeleteSlot = async (slotId: string, slotName: string) => {
+    const confirmed = window.confirm(
+      `Are you sure you want to permanently delete the meal slot "${slotName}"?\n\nThis will remove it from both the Admin Panel and the Customer Mobile App.`
+    );
+    if (!confirmed) return;
+
+    try {
+      await deleteDoc(doc(db, 'meal_slots', slotId));
+    } catch (e) {
+      console.error('Failed to delete slot from Firestore:', e);
+      setSlots(prev => prev.filter(s => s.id !== slotId));
+    }
+
+    if (editingSlot?.id === slotId) {
+      setEditingSlot(null);
     }
   };
 
@@ -77,13 +94,17 @@ export default function MealSlotsPage() {
     };
 
     try {
-      const docRef = await addDoc(collection(db, 'meal_slots'), newSlot);
-      setSlots(prev => [...prev, { id: docRef.id, ...newSlot }]);
+      await addDoc(collection(db, 'meal_slots'), newSlot);
+      // onSnapshot automatically updates slots with the new document
     } catch (e) {
-      setSlots(prev => [
-        ...prev,
-        { id: `slot_${Date.now()}`, ...newSlot },
-      ]);
+      console.error('Failed to add slot to Firestore:', e);
+      setSlots(prev => {
+        const slotMap = new Map<string, MealSlot>();
+        prev.forEach(s => slotMap.set(s.id, s));
+        const fallbackId = `slot_${Date.now()}`;
+        slotMap.set(fallbackId, { id: fallbackId, ...newSlot });
+        return Array.from(slotMap.values());
+      });
     }
 
     setShowAddModal(false);
@@ -181,7 +202,16 @@ export default function MealSlotsPage() {
               </div>
             </div>
 
-            <div className="mt-5 pt-4 border-t border-slate-800 flex justify-end">
+            <div className="mt-5 pt-4 border-t border-slate-800 flex items-center justify-between">
+              <button
+                onClick={() => handleDeleteSlot(slot.id, slot.name)}
+                className="bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 font-semibold text-xs px-3.5 py-2 rounded-lg transition-all flex items-center gap-1.5"
+                title="Permanently delete this meal slot"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>Delete Slot</span>
+              </button>
+
               <button
                 onClick={() => setEditingSlot(slot)}
                 className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs px-4 py-2 rounded-lg border border-slate-700 transition-all"
@@ -273,22 +303,33 @@ export default function MealSlotsPage() {
               </div>
             </div>
 
-            <div className="flex justify-end gap-3 pt-2">
+            <div className="flex items-center justify-between pt-2">
               <button
                 type="button"
-                onClick={() => setEditingSlot(null)}
-                className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs px-4 py-2.5 rounded-xl border border-slate-700"
+                onClick={() => handleDeleteSlot(editingSlot.id, editingSlot.name)}
+                className="bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 font-semibold text-xs px-3.5 py-2.5 rounded-xl transition-all flex items-center gap-1.5"
               >
-                Cancel
+                <Trash2 className="h-4 w-4" />
+                <span>Delete Slot</span>
               </button>
-              <button
-                type="button"
-                onClick={handleSaveCutoff}
-                className="bg-orange-600 hover:bg-orange-500 text-white font-bold text-xs px-5 py-2.5 rounded-xl shadow-lg flex items-center gap-1.5"
-              >
-                <Check className="h-4 w-4" />
-                <span>Save & Push to App</span>
-              </button>
+
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setEditingSlot(null)}
+                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs px-4 py-2.5 rounded-xl border border-slate-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveCutoff}
+                  className="bg-orange-600 hover:bg-orange-500 text-white font-bold text-xs px-5 py-2.5 rounded-xl shadow-lg flex items-center gap-1.5"
+                >
+                  <Check className="h-4 w-4" />
+                  <span>Save & Push to App</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>

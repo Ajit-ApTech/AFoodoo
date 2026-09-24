@@ -74,16 +74,37 @@ export default function OrderQueuePage() {
 
       // Fetch user's push token and dispatch system push notification
       if (targetOrder) {
-        let fcmToken: string | null = null;
+        let fcmToken: string | null =
+          (targetOrder as any).expo_push_token || (targetOrder as any).fcm_token || null;
         const userPhoneDigits = (targetOrder.user_phone || '').replace(/\D/g, '');
-        const userDocId = targetOrder.user_id || `usr_${userPhoneDigits}`;
+        const userDocId = targetOrder.user_id || (userPhoneDigits ? `usr_${userPhoneDigits}` : '');
 
-        try {
-          const userSnap = await getDoc(doc(db, 'users', userDocId));
-          if (userSnap.exists()) {
-            fcmToken = userSnap.data()?.expo_push_token || userSnap.data()?.fcm_token || null;
-          }
-        } catch (uErr) {}
+        if (!fcmToken && userDocId) {
+          try {
+            const userSnap = await getDoc(doc(db, 'users', userDocId));
+            if (userSnap.exists()) {
+              fcmToken = userSnap.data()?.expo_push_token || userSnap.data()?.fcm_token || null;
+            }
+          } catch (uErr) {}
+        }
+
+        // Secondary check with alternate phone format (10-digit vs 12-digit with 91 prefix)
+        if (!fcmToken && userPhoneDigits) {
+          try {
+            const altId =
+              userPhoneDigits.length === 10
+                ? `usr_91${userPhoneDigits}`
+                : userPhoneDigits.startsWith('91') && userPhoneDigits.length === 12
+                ? `usr_${userPhoneDigits.slice(2)}`
+                : null;
+            if (altId) {
+              const altSnap = await getDoc(doc(db, 'users', altId));
+              if (altSnap.exists()) {
+                fcmToken = altSnap.data()?.expo_push_token || altSnap.data()?.fcm_token || null;
+              }
+            }
+          } catch (altErr) {}
+        }
 
         if (fcmToken) {
           let pushTitle = '🍲 AFoodoo Order Update';
