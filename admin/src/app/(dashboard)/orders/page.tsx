@@ -8,6 +8,17 @@ import { ShoppingBag, Truck, CheckCircle, Clock, MapPin, RotateCcw, History, Nav
 import { sendExpoPushNotification } from '../../../lib/pushService';
 import { nearestNeighborSort, buildRouteUrl, buildMapsLink } from '../../../lib/geo';
 
+interface RouteStopInfo {
+  lat: number;
+  lng: number;
+  orderId: string;
+  name: string;
+  phone: string;
+  address: string;
+  otp: string;
+  menuTitle: string;
+}
+
 export default function OrderQueuePage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
@@ -16,6 +27,7 @@ export default function OrderQueuePage() {
   const [selectedZoneFilter, setSelectedZoneFilter] = useState<'all' | 'zone_1' | 'zone_2' | 'zone_3'>('all');
   const [deliveryConfig, setDeliveryConfig] = useState<DeliveryConfig | null>(null);
   const [routeLinks, setRouteLinks] = useState<string[]>([]);
+  const [routeStops, setRouteStops] = useState<RouteStopInfo[]>([]);
   const [showRouteModal, setShowRouteModal] = useState(false);
   const [routeCopied, setRouteCopied] = useState<number | null>(null);
 
@@ -166,13 +178,17 @@ export default function OrderQueuePage() {
       return;
     }
 
-    const stops = activeOrders.map(o => ({
+    const stops: RouteStopInfo[] = activeOrders.map(o => ({
       lat: o.delivery_lat!,
       lng: o.delivery_lng!,
       orderId: o.id,
       name: o.delivery_name || o.user_name || 'Customer',
       phone: o.delivery_phone || o.user_phone || '',
-      address: o.delivery_address?.line1 || '',
+      address: o.delivery_address?.line1
+        ? `${o.delivery_address.line1}${o.delivery_address.city ? `, ${o.delivery_address.city}` : ''}`
+        : 'Address on file',
+      otp: o.otp_code || 'N/A',
+      menuTitle: o.menu_title || 'Tiffin Meal',
     }));
 
     const sorted = nearestNeighborSort(
@@ -194,6 +210,7 @@ export default function OrderQueuePage() {
       return buildRouteUrl(originLat, originLng, chunk);
     });
 
+    setRouteStops(sorted);
     setRouteLinks(links);
     setShowRouteModal(true);
   }, [orders, deliveryConfig]);
@@ -204,10 +221,31 @@ export default function OrderQueuePage() {
       return;
     }
     const phone = deliveryConfig.rider_whatsapp.replace(/[^0-9]/g, '');
-    const message = routeLinks
-      .map((link, i) => `🛵 Delivery Route Link ${routeLinks.length > 1 ? `(Part ${i + 1}) ` : ''}: ${link}`)
-      .join('%0A%0A');
-    const whatsappUrl = `https://wa.me/${phone}?text=🍲 AFoodoo Delivery Route - ${new Date().toLocaleDateString('en-IN')}:%0A%0A${message}`;
+
+    const stopsSummary = routeStops
+      .map(
+        (s, i) =>
+          `📍 *Stop #${i + 1}:* ${s.name}\n   📞 ${s.phone}\n   🏠 ${s.address}\n   🍱 Meal: ${s.menuTitle}\n   🔐 Delivery OTP: *${s.otp}*`
+      )
+      .join('\n\n');
+
+    const linksText = routeLinks
+      .map(
+        (link, i) =>
+          `🗺️ *Navigation Link ${routeLinks.length > 1 ? `(Part ${i + 1})` : ''}:*\n${link}`
+      )
+      .join('\n\n');
+
+    const fullMessage =
+      `🍲 *AFoodoo Delivery Route* (${new Date().toLocaleDateString('en-IN')}):\n\n` +
+      `🛵 *Stops in Optimal Sequence (${routeStops.length} Deliveries):*\n\n` +
+      `${stopsSummary}\n\n` +
+      `───────────────────────\n` +
+      `🧭 *Turn-by-Turn Google Maps Navigation:*\n\n` +
+      `${linksText}\n\n` +
+      `⚠️ *Rider Notice:* Collect and verify the 4-digit OTP from the customer before handing over the tiffin!`;
+
+    const whatsappUrl = `https://wa.me/${phone}?text=${encodeURIComponent(fullMessage)}`;
     window.open(whatsappUrl, '_blank');
   };
 
@@ -489,6 +527,34 @@ export default function OrderQueuePage() {
             <p className="text-xs text-slate-400">
               Stops are sorted by nearest-neighbor from kitchen. Google Maps URL with turn-by-turn navigation.
             </p>
+
+            {routeStops.length > 0 && (
+              <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-3 space-y-2 max-h-44 overflow-y-auto">
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wide">
+                  Sequence & Customer OTP ({routeStops.length} Orders)
+                </p>
+                <div className="space-y-1.5">
+                  {routeStops.map((stop, i) => (
+                    <div key={stop.orderId} className="flex items-center justify-between text-xs bg-slate-900/80 p-2 rounded-lg border border-slate-800/80">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 font-bold text-[10px] flex items-center justify-center shrink-0">
+                          {i + 1}
+                        </span>
+                        <div className="truncate">
+                          <p className="font-semibold text-slate-200 truncate">{stop.name}</p>
+                          <p className="text-[10px] text-slate-400 truncate">{stop.address}</p>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0 ml-2">
+                        <span className="text-[10px] bg-amber-500/10 text-amber-400 border border-amber-500/30 px-2 py-0.5 rounded font-mono font-bold">
+                          OTP: {stop.otp}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="space-y-3">
               {routeLinks.map((link, idx) => (

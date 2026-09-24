@@ -57,7 +57,7 @@ export function buildRouteUrl(
   url += `&origin=${originLat},${originLng}`;
   url += `&destination=${destination.lat},${destination.lng}`;
   if (waypoints.length > 0) {
-    url += `&waypoints=${waypoints.map(s => `${s.lat},${s.lng}`).join('|')}`;
+    url += `&waypoints=${waypoints.map(s => `${s.lat},${s.lng}`).join('%7C')}`;
   }
   url += `&travelmode=driving`;
   return url;
