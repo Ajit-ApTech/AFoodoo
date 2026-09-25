@@ -4,7 +4,6 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  SafeAreaView,
   ScrollView,
   Alert,
   Animated,
@@ -12,7 +11,9 @@ import {
   LayoutAnimation,
   Platform,
   UIManager,
+  StatusBar,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { firestore } from '../firebaseConfig';
 import { doc, onSnapshot, collection } from 'firebase/firestore';
 import { useAppStore } from '../store/appStore';
@@ -200,8 +201,12 @@ export default function OrderTrackingScreen({ route, navigation }: any) {
     Alert.alert('Thank You! ⭐', `You rated this meal ${stars} Stars. Your feedback improves our kitchen!`);
   };
 
+  const insets = useSafeAreaInsets();
+  const topInset = Math.max(insets.top, Platform.OS === 'android' ? (StatusBar.currentHeight || 38) : 0);
+
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
+    <SafeAreaView edges={['left', 'right', 'bottom']} style={[styles.safeArea, { backgroundColor: theme.background, paddingTop: topInset }]}>
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={theme.background} />
       <ScrollView contentContainerStyle={styles.container}>
         <Text style={[styles.pageTitle, { color: theme.textPrimary }]}>Track Tiffin Orders 🚴</Text>
 

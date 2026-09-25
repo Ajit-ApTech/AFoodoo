@@ -6,11 +6,13 @@ import {
   TouchableOpacity,
   Alert,
   TextInput,
-  SafeAreaView,
   ScrollView,
   Modal,
   Image,
+  Platform,
+  StatusBar,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppStore } from '../store/appStore';
 import { submitPaymentRequest } from '../api/payments';
 import dayjs from 'dayjs';
@@ -610,12 +612,24 @@ export default function SubscriptionScreen({ navigation, route }: any) {
     return days;
   }, []);
 
+  const insets = useSafeAreaInsets();
+  const topInset = Math.max(insets.top, Platform.OS === 'android' ? (StatusBar.currentHeight || 38) : 0);
+
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
+    <SafeAreaView edges={['left', 'right', 'bottom']} style={[styles.safeArea, { backgroundColor: theme.background, paddingTop: topInset }]}>
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={theme.background} />
+      <View style={styles.topHeaderBar}>
+        <TouchableOpacity
+          style={[styles.headerBackBtn, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}
+          onPress={() => navigation.goBack()}
+          activeOpacity={0.7}
+        >
+          <Text style={[styles.headerBackBtnText, { color: theme.textPrimary }]}>←</Text>
+        </TouchableOpacity>
+        <Text style={[styles.headerTitleText, { color: theme.textPrimary }]}>Meal Subscriptions 🍱</Text>
+        <View style={{ width: 36 }} />
+      </View>
       <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
-        <Text style={[styles.pageTitle, { color: theme.textPrimary }]}>
-          Tiffin Subscriptions 🍱
-        </Text>
 
         {/* Top Tabs: Active vs Past */}
         <View style={styles.tabBar}>
@@ -1602,6 +1616,29 @@ export default function SubscriptionScreen({ navigation, route }: any) {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
+  topHeaderBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  headerBackBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerBackBtnText: {
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  headerTitleText: {
+    fontSize: 17,
+    fontWeight: '800',
+  },
   container: { padding: 18, paddingBottom: 40 },
   pageTitle: { fontSize: 22, fontWeight: '900', marginBottom: 16 },
 

@@ -79,6 +79,7 @@ function MainNavigator() {
         <Stack.Navigator
           initialRouteName={user ? 'Home' : 'Auth'}
           screenOptions={{
+            headerShown: false,
             headerStyle: { backgroundColor: theme.background },
             headerTintColor: theme.primary,
             headerTitleStyle: { fontWeight: '700', color: theme.textPrimary },
@@ -86,22 +87,14 @@ function MainNavigator() {
             headerBackTitleVisible: false,
           }}
         >
-          <Stack.Screen name="Auth" component={AuthScreen} options={{ headerShown: false }} />
-          <Stack.Screen
-            name="Home"
-            component={HomeScreen}
-            options={{ headerShown: false }}
-          />
-          <Stack.Screen
-            name="Menu"
-            component={MenuScreen}
-            options={{ headerShown: false }}
-          />
-          <Stack.Screen name="Booking" component={BookingScreen} options={{ title: 'Confirm Booking' }} />
-          <Stack.Screen name="OrderTracking" component={OrderTrackingScreen} options={{ title: 'Order Tracking', headerBackVisible: false }} />
-          <Stack.Screen name="Subscription" component={SubscriptionScreen} options={{ title: 'Meal Subscriptions' }} />
-          <Stack.Screen name="Wallet" component={WalletScreen} options={{ title: 'AFoodoo Wallet', headerBackVisible: false }} />
-          <Stack.Screen name="Profile" component={ProfileScreen} options={{ title: 'Account & Settings', headerBackVisible: false }} />
+          <Stack.Screen name="Auth" component={AuthScreen} />
+          <Stack.Screen name="Home" component={HomeScreen} />
+          <Stack.Screen name="Menu" component={MenuScreen} />
+          <Stack.Screen name="Booking" component={BookingScreen} />
+          <Stack.Screen name="OrderTracking" component={OrderTrackingScreen} />
+          <Stack.Screen name="Subscription" component={SubscriptionScreen} />
+          <Stack.Screen name="Wallet" component={WalletScreen} />
+          <Stack.Screen name="Profile" component={ProfileScreen} />
         </Stack.Navigator>
       </NavigationContainer>
     </SafeAreaProvider>

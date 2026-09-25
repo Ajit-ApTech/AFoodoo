@@ -4,12 +4,14 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  SafeAreaView,
   ScrollView,
   Alert,
   ActivityIndicator,
   TextInput,
+  Platform,
+  StatusBar,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppStore } from '../store/appStore';
 import { useTheme } from '../theme/ThemeContext';
 import { collection, doc, onSnapshot, query, where } from 'firebase/firestore';
@@ -21,7 +23,7 @@ import { UpiPaymentModal } from '../components/UpiPaymentModal';
 import { BottomNavBar, BottomTabType } from '../components/BottomNavBar';
 
 export default function WalletScreen({ navigation }: any) {
-  const { theme } = useTheme();
+  const { theme, isDark } = useTheme();
   const user = useAppStore(state => state.user);
   const setUser = useAppStore(state => state.setUser);
   const creditWalletBalance = useAppStore(state => state.creditWalletBalance);
@@ -208,8 +210,12 @@ export default function WalletScreen({ navigation }: any) {
     refund: '🔵',
   };
 
+  const insets = useSafeAreaInsets();
+  const topInset = Math.max(insets.top, Platform.OS === 'android' ? (StatusBar.currentHeight || 38) : 0);
+
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
+    <SafeAreaView edges={['left', 'right', 'bottom']} style={[styles.safeArea, { backgroundColor: theme.background, paddingTop: topInset }]}>
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={theme.background} />
       <ScrollView contentContainerStyle={styles.container}>
         <Text style={[styles.pageTitle, { color: theme.textPrimary }]}>AFoodoo Wallet 💳</Text>
 

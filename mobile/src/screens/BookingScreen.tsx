@@ -6,12 +6,14 @@ import {
   TouchableOpacity,
   StyleSheet,
   Alert,
-  SafeAreaView,
   ScrollView,
   Image,
   ActivityIndicator,
   Modal,
+  Platform,
+  StatusBar,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppStore } from '../store/appStore';
 import { placeOrder } from '../api/orders';
 import { submitPaymentRequest } from '../api/payments';
@@ -407,8 +409,23 @@ export default function BookingScreen({ route, navigation }: any) {
     },
   ];
 
+  const insets = useSafeAreaInsets();
+  const topInset = Math.max(insets.top, Platform.OS === 'android' ? (StatusBar.currentHeight || 38) : 0);
+
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
+    <SafeAreaView edges={['left', 'right', 'bottom']} style={[styles.safeArea, { backgroundColor: theme.background, paddingTop: topInset }]}>
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={theme.background} />
+      <View style={styles.topHeaderBar}>
+        <TouchableOpacity
+          style={[styles.headerBackBtn, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}
+          onPress={() => navigation.goBack()}
+          activeOpacity={0.7}
+        >
+          <Text style={[styles.headerBackBtnText, { color: theme.textPrimary }]}>←</Text>
+        </TouchableOpacity>
+        <Text style={[styles.headerTitleText, { color: theme.textPrimary }]}>Confirm Booking 🍲</Text>
+        <View style={{ width: 36 }} />
+      </View>
       <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
         {/* Step Indicator matching reference: ❶ Details —— ② Payment —— ③ Confirmed */}
         <View style={styles.stepperContainer}>
@@ -919,6 +936,29 @@ export default function BookingScreen({ route, navigation }: any) {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
+  topHeaderBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  headerBackBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerBackBtnText: {
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  headerTitleText: {
+    fontSize: 17,
+    fontWeight: '800',
+  },
   container: {
     padding: 16,
     paddingBottom: 40,

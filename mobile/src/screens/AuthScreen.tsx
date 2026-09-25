@@ -6,11 +6,13 @@ import {
   TouchableOpacity,
   StyleSheet,
   Alert,
-  SafeAreaView,
   ScrollView,
   ActivityIndicator,
   Image,
+  Platform,
+  StatusBar,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { firestore } from '../firebaseConfig';
 import { useAppStore } from '../store/appStore';
 import { useTheme } from '../theme/ThemeContext';
@@ -26,7 +28,7 @@ const COUNTRY_CODES = [
 ];
 
 export default function AuthScreen({ navigation }: any) {
-  const { theme } = useTheme();
+  const { theme, isDark } = useTheme();
   const [countryCode, setCountryCode] = useState('91');
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
@@ -134,8 +136,12 @@ export default function AuthScreen({ navigation }: any) {
     navigation.replace('Home');
   };
 
+  const insets = useSafeAreaInsets();
+  const topInset = Math.max(insets.top, Platform.OS === 'android' ? (StatusBar.currentHeight || 38) : 0);
+
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
+    <SafeAreaView edges={['left', 'right', 'bottom']} style={[styles.safeArea, { backgroundColor: theme.background, paddingTop: topInset }]}>
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={theme.background} />
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
         {/* Brand Header */}
         <View style={styles.headerContainer}>

@@ -4,7 +4,6 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  SafeAreaView,
   ScrollView,
   Switch,
   Alert,
@@ -12,7 +11,10 @@ import {
   TextInput,
   ActivityIndicator,
   Linking,
+  Platform,
+  StatusBar,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppStore } from '../store/appStore';
 import { useTheme, ThemeMode } from '../theme/ThemeContext';
 import { DeliveryAddress } from '../types';
@@ -23,7 +25,7 @@ export default function ProfileScreen({ navigation }: any) {
   const setUser = useAppStore(state => state.setUser);
   const notificationSettings = useAppStore(state => state.notificationSettings);
   const setNotificationSettings = useAppStore(state => state.setNotificationSettings);
-  const { theme, themeMode, setThemeMode } = useTheme();
+  const { theme, themeMode, setThemeMode, isDark } = useTheme();
 
   // Edit Name Modal state
   const [showEditNameModal, setShowEditNameModal] = useState(false);
@@ -320,8 +322,12 @@ export default function ProfileScreen({ navigation }: any) {
 
   const inputStyle = [styles.modalInput, { backgroundColor: theme.inputBg, borderColor: theme.inputBorder, color: theme.inputText }];
 
+  const insets = useSafeAreaInsets();
+  const topInset = Math.max(insets.top, Platform.OS === 'android' ? (StatusBar.currentHeight || 38) : 0);
+
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
+    <SafeAreaView edges={['left', 'right', 'bottom']} style={[styles.safeArea, { backgroundColor: theme.background, paddingTop: topInset }]}>
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={theme.background} />
       <ScrollView contentContainerStyle={styles.container}>
         <Text style={[styles.pageTitle, { color: theme.textPrimary }]}>Account & Settings ⚙️</Text>
 

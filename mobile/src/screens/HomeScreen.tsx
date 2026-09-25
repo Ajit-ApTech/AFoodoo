@@ -575,9 +575,9 @@ export default function HomeScreen({ navigation }: any) {
         onUnreadCountChange={setUnreadCount}
       />
       <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
-        {/* Top App Header with Logo, Greeting, Wallet, Bell & Cart inside Safe Area */}
+        {/* Top App Header with Logo (Left), Greeting (Center), Wallet, Bell & Cart (Right) */}
         <View style={styles.topHeader}>
-          {/* Left: Brand Logo & User Greeting */}
+          {/* Left: Brand Logo (Enlarged) */}
           <View style={styles.headerLeftCol}>
             <Image
               source={
@@ -588,12 +588,14 @@ export default function HomeScreen({ navigation }: any) {
               style={styles.headerBrandLogo}
               resizeMode="contain"
             />
-            <View style={styles.headerGreetingCol}>
-              <Text style={[styles.greetingSmallText, { color: theme.textSecondary }]}>Welcome Back 👋</Text>
-              <Text style={[styles.userNameHeading, { color: theme.textPrimary }]} numberOfLines={1}>
-                {user?.name || 'Customer'}
-              </Text>
-            </View>
+          </View>
+
+          {/* Center: User Greeting */}
+          <View style={styles.headerCenterCol}>
+            <Text style={[styles.greetingSmallText, { color: theme.textSecondary }]}>Welcome Back 👋</Text>
+            <Text style={[styles.userNameHeading, { color: theme.textPrimary }]} numberOfLines={1}>
+              {user?.name || 'Ajit'}
+            </Text>
           </View>
 
           {/* Right: Wallet Pill, Bell Notification & Cart Button */}
@@ -1088,33 +1090,34 @@ const styles = StyleSheet.create({
     paddingTop: 2,
   },
   headerLeftCol: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-    marginRight: 6,
+    justifyContent: 'center',
+    alignItems: 'flex-start',
   },
   headerBrandLogo: {
-    width: 68,
-    height: 28,
-    marginRight: 6,
+    width: 86,
+    height: 36,
   },
-  headerGreetingCol: {
+  headerCenterCol: {
+    flex: 1,
+    alignItems: 'center',
     justifyContent: 'center',
-    flexShrink: 1,
+    paddingHorizontal: 4,
   },
   greetingSmallText: {
-    fontSize: 10,
+    fontSize: 10.5,
     fontWeight: '600',
     marginBottom: 1,
+    textAlign: 'center',
   },
   userNameHeading: {
-    fontSize: 14.5,
+    fontSize: 14,
     fontWeight: '800',
+    textAlign: 'center',
   },
   headerRightActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+    gap: 4,
   },
   walletBadgeCompact: {
     flexDirection: 'row',
