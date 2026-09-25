@@ -5,15 +5,16 @@ import {
   TouchableOpacity,
   ScrollView,
   StyleSheet,
-  SafeAreaView,
   StatusBar,
   Alert,
   Image,
+  Platform,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useAppStore } from '../store/appStore';
 import { firestore } from '../firebaseConfig';
-import { fetchMealSlotsFromRest } from '../api/firestoreApi';
+import { fetchMealSlotsFromRest, fetchMenuItemsFromRest } from '../api/firestoreApi';
 import { collection, query, where, onSnapshot, DocumentData } from 'firebase/firestore';
 import dayjs from 'dayjs';
 import { SkeletonCard } from '../components/UIState';
@@ -32,10 +33,23 @@ export default function HomeScreen({ navigation }: any) {
   const setAnnouncementsOpen = useAppStore(state => state.setAnnouncementsModalOpen);
   const unreadCount = useAppStore(state => state.unreadAnnouncementsCount);
   const setUnreadCount = useAppStore(state => state.setUnreadAnnouncementsCount);
+  const cart = useAppStore(state => state.cart || []);
+  const cartTotalCount = (cart || []).reduce((s: number, i: any) => s + (i.quantity || 1), 0);
+  const menuItems = useAppStore(state => state.menuItems || []);
+  const setMenuItems = useAppStore(state => state.setMenuItems);
   const [allSlots, setAllSlots] = useState<any[]>([]);
   const [nowTime, setNowTime] = useState<dayjs.Dayjs>(dayjs());
   const [loading, setLoading] = useState<boolean>(true);
   const [userSubscriptions, setUserSubscriptions] = useState<any[]>([]);
+
+  // Load menu items if not already cached
+  useEffect(() => {
+    if (menuItems.length === 0) {
+      fetchMenuItemsFromRest().then((items: any[]) => {
+        if (items && items.length > 0) setMenuItems(items);
+      }).catch(() => {});
+    }
+  }, []);
 
 
 
@@ -398,14 +412,30 @@ export default function HomeScreen({ navigation }: any) {
         const { triggerLocalNotification } = require('../services/notificationService');
 
         const nextCode = await getNextOrderCode();
-        const selectedDailyDish = sub.daily_menu?.[todayStr] || {
-          id: 'dish_sub_default',
-          name: `${sub.plan_type || 'Tiffin'} Chef Special Meal`,
-          price: 120,
-          extraCharge: 0,
-        };
-        const dishName = selectedDailyDish.name || `${sub.plan_type || 'Tiffin'} Daily Meal`;
-        const mealPrice = Number(selectedDailyDish.price) || 120;
+        let selectedDailyDish = sub.daily_menu?.[todayStr];
+        if (!selectedDailyDish) {
+          // If no pre-scheduled dish, pick real featured meal from menuItems
+          const matchingDish =
+            (menuItems || []).find((m: any) => m.slot_id === activeSlot.id || m.is_active) ||
+            menuItems?.[0];
+          if (matchingDish) {
+            selectedDailyDish = {
+              id: matchingDish.id,
+              name: matchingDish.title || matchingDish.name,
+              price: Number(matchingDish.price) || 150,
+              extraCharge: 0,
+            };
+          } else {
+            selectedDailyDish = {
+              id: 'dish_sub_default',
+              name: `${sub.plan_type || 'Tiffin'} Daily Meal`,
+              price: 150,
+              extraCharge: 0,
+            };
+          }
+        }
+        const dishName = selectedDailyDish.name || selectedDailyDish.title || `${sub.plan_type || 'Tiffin'} Daily Meal`;
+        const mealPrice = Number(selectedDailyDish.price) || 150;
 
         // Deduct the selected meal price from customer's subscription wallet balance
         if (mealPrice > 0) {
@@ -432,6 +462,23 @@ export default function HomeScreen({ navigation }: any) {
           }
         }
 
+        const savedAddr: any = (user?.addresses && user.addresses.length > 0) ? user.addresses[0] : null;
+        const deliveryAddressObj = {
+          label: savedAddr?.label || 'Home',
+          receiver_name: savedAddr?.receiver_name || sub.user_name || user.name || 'Customer',
+          receiver_phone: savedAddr?.receiver_phone || cleanPhone,
+          line1: savedAddr?.line1 || (user as any).address || 'M8W2+7RW, North Chotanagpur Division, Potanga',
+          landmark: savedAddr?.landmark || 'Near birsa workshop',
+          city: savedAddr?.city || 'Potanga',
+          zip: savedAddr?.zip || '825311',
+          latitude: savedAddr?.latitude ?? 23.660920933979938,
+          longitude: savedAddr?.longitude ?? 85.306910625171,
+        };
+        const deliveryLat = savedAddr?.latitude ?? 23.660920933979938;
+        const deliveryLng = savedAddr?.longitude ?? 85.306910625171;
+        const mapsLink = `https://www.google.com/maps/search/?api=1&query=${deliveryLat},${deliveryLng}`;
+        const otpCode = Math.floor(1000 + Math.random() * 9000).toString();
+
         await addDoc(collection(firestore, 'orders'), {
           order_code: nextCode,
           user_id: userDocId,
@@ -439,11 +486,18 @@ export default function HomeScreen({ navigation }: any) {
           customer_name: sub.user_name || user.name || 'Customer',
           user_phone: cleanPhone,
           customer_phone: cleanPhone,
-          delivery_address: (user as any).address || (user as any).delivery_address || user.addresses?.[0]?.line1 || 'Potanga / Main Location',
+          delivery_name: deliveryAddressObj.receiver_name,
+          delivery_phone: deliveryAddressObj.receiver_phone,
+          delivery_address: deliveryAddressObj,
+          delivery_lat: deliveryLat,
+          delivery_lng: deliveryLng,
+          maps_link: mapsLink,
+          otp_code: otpCode,
           menu_title: dishName,
           items: [
             {
               id: selectedDailyDish.id || 'dish_sub',
+              title: dishName,
               name: dishName,
               price: mealPrice,
               quantity: 1,
@@ -509,8 +563,11 @@ export default function HomeScreen({ navigation }: any) {
     }
   };
 
+  const insets = useSafeAreaInsets();
+  const topInset = Math.max(insets.top, Platform.OS === 'android' ? (StatusBar.currentHeight || 38) : 0);
+
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
+    <SafeAreaView edges={['left', 'right', 'bottom']} style={[styles.safeArea, { backgroundColor: theme.background, paddingTop: topInset }]}>
       <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={theme.background} />
       <AnnouncementsModal
         visible={announcementsOpen}
@@ -518,23 +575,69 @@ export default function HomeScreen({ navigation }: any) {
         onUnreadCountChange={setUnreadCount}
       />
       <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
-        {/* User Greeting & Wallet Row */}
-        <View style={styles.userBar}>
-          <View style={styles.userGreetingCol}>
-            <Text style={[styles.greetingText, { color: theme.textSecondary }]}>Welcome Back 👋</Text>
-            <Text style={[styles.userName, { color: theme.textPrimary }]}>{user?.name || 'AFoodoo Customer'}</Text>
+        {/* Top App Header with Logo, Greeting, Wallet, Bell & Cart inside Safe Area */}
+        <View style={styles.topHeader}>
+          {/* Left: Brand Logo & User Greeting */}
+          <View style={styles.headerLeftCol}>
+            <Image
+              source={
+                isDark
+                  ? require('../../assets/afoodoo-logo-light.png')
+                  : require('../../assets/afoodoo-logo-dark.png')
+              }
+              style={styles.headerBrandLogo}
+              resizeMode="contain"
+            />
+            <View style={styles.headerGreetingCol}>
+              <Text style={[styles.greetingSmallText, { color: theme.textSecondary }]}>Welcome Back 👋</Text>
+              <Text style={[styles.userNameHeading, { color: theme.textPrimary }]} numberOfLines={1}>
+                {user?.name || 'Customer'}
+              </Text>
+            </View>
           </View>
 
-          <TouchableOpacity
-            onPress={() => navigation.navigate('Wallet')}
-            style={[styles.walletBadge, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.walletEmoji}>💳</Text>
-            <Text style={[styles.walletText, { color: theme.primary }]}>
-              ₹{(user?.wallet_balance || 10204).toFixed(0)}
-            </Text>
-          </TouchableOpacity>
+          {/* Right: Wallet Pill, Bell Notification & Cart Button */}
+          <View style={styles.headerRightActions}>
+            <TouchableOpacity
+              onPress={() => navigation.navigate('Wallet')}
+              style={[styles.walletBadgeCompact, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}
+              activeOpacity={0.8}
+            >
+              <Text style={{ fontSize: 12 }}>💳</Text>
+              <Text style={[styles.walletTextCompact, { color: theme.primary }]}>
+                ₹{(user?.wallet_balance ?? 0).toFixed(0)}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => setAnnouncementsOpen(true)}
+              style={[styles.headerIconBtn, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}
+              activeOpacity={0.7}
+            >
+              <Text style={{ fontSize: 14 }}>🔔</Text>
+              {unreadCount > 0 && (
+                <View
+                  style={[
+                    styles.unreadBadgeDot,
+                    { backgroundColor: theme.primary, borderColor: theme.background },
+                  ]}
+                />
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => navigation.navigate('Booking', {})}
+              style={[styles.headerIconBtn, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}
+              activeOpacity={0.7}
+            >
+              <Text style={{ fontSize: 15 }}>🛒</Text>
+              {cartTotalCount > 0 && (
+                <View style={styles.cartBadgeDot}>
+                  <Text style={styles.cartBadgeText}>{cartTotalCount}</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* Delivery Address Capsule */}
@@ -977,21 +1080,91 @@ export default function HomeScreen({ navigation }: any) {
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
   container: { paddingHorizontal: 16, paddingTop: 4, paddingBottom: 20 },
-  userBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  userGreetingCol: { flex: 1, marginRight: 12 },
-  greetingText: { fontSize: 12, fontWeight: '600', marginBottom: 2 },
-  userName: { fontSize: 17, fontWeight: '800' },
-  walletBadge: {
+  topHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+    paddingTop: 2,
+  },
+  headerLeftCol: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    marginRight: 6,
+  },
+  headerBrandLogo: {
+    width: 68,
+    height: 28,
+    marginRight: 6,
+  },
+  headerGreetingCol: {
+    justifyContent: 'center',
+    flexShrink: 1,
+  },
+  greetingSmallText: {
+    fontSize: 10,
+    fontWeight: '600',
+    marginBottom: 1,
+  },
+  userNameHeading: {
+    fontSize: 14.5,
+    fontWeight: '800',
+  },
+  headerRightActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  walletBadgeCompact: {
     flexDirection: 'row',
     alignItems: 'center',
     borderWidth: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-    minHeight: 36,
+    paddingHorizontal: 7,
+    paddingVertical: 5,
+    borderRadius: 14,
+    minHeight: 30,
   },
-  walletEmoji: { fontSize: 14, marginRight: 5 },
-  walletText: { fontSize: 14, fontWeight: '800' },
+  walletTextCompact: {
+    fontSize: 11.5,
+    fontWeight: '800',
+    marginLeft: 3,
+  },
+  headerIconBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'relative',
+  },
+  unreadBadgeDot: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    borderWidth: 1.5,
+  },
+  cartBadgeDot: {
+    position: 'absolute',
+    top: -3,
+    right: -4,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#FF6B00',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 3,
+  },
+  cartBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 9,
+    fontWeight: '900',
+  },
   addressBar: {
     flexDirection: 'row',
     alignItems: 'center',

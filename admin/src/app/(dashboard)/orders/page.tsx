@@ -407,7 +407,7 @@ export default function OrderQueuePage() {
                     <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider block">Items Ordered</span>
                     {order.items.map((it: any, i: number) => (
                       <div key={i} className="flex justify-between items-center text-slate-300">
-                        <span>{it.title} <span className="text-orange-400 font-bold">× {it.quantity}</span></span>
+                        <span>{it.title || it.name || 'Tiffin Meal'} <span className="text-orange-400 font-bold">× {it.quantity}</span></span>
                         <span className="font-mono text-slate-400 font-semibold">₹{(it.price * it.quantity).toFixed(0)}</span>
                       </div>
                     ))}

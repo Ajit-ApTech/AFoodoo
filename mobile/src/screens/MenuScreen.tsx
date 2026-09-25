@@ -8,10 +8,12 @@ import {
   StyleSheet,
   Alert,
   ActivityIndicator,
-  SafeAreaView,
   RefreshControl,
   ScrollView,
+  Platform,
+  StatusBar,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppStore } from '../store/appStore';
 import { firestore } from '../firebaseConfig';
 import { collection, onSnapshot, DocumentData } from 'firebase/firestore';
@@ -341,8 +343,42 @@ export default function MenuScreen({ navigation }: any) {
     );
   };
 
+  const insets = useSafeAreaInsets();
+  const topInset = Math.max(insets.top, Platform.OS === 'android' ? (StatusBar.currentHeight || 38) : 0);
+
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
+    <SafeAreaView edges={['left', 'right', 'bottom']} style={[styles.safeArea, { backgroundColor: theme.background, paddingTop: topInset }]}>
+      {/* Top Header Bar with Back button, Title, and Cart inside Safe Area */}
+      <View style={[styles.menuHeaderBar, { backgroundColor: theme.background, borderBottomColor: theme.surfaceBorder }]}>
+        <TouchableOpacity
+          onPress={() => navigation.goBack()}
+          style={[styles.backBtnCircle, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}
+          activeOpacity={0.7}
+        >
+          <Text style={{ fontSize: 16, color: theme.textPrimary, fontWeight: '800' }}>←</Text>
+        </TouchableOpacity>
+        <View style={{ flex: 1, marginLeft: 12 }}>
+          <Text style={[styles.menuHeaderTitle, { color: theme.textPrimary }]} numberOfLines={1}>
+            Today's Tiffin Menu 🍱
+          </Text>
+          <Text style={[styles.menuHeaderSub, { color: theme.textSecondary }]} numberOfLines={1}>
+            {activeSlot?.name || 'Fresh daily home-cooked meals'}
+          </Text>
+        </View>
+        <TouchableOpacity
+          onPress={() => navigation.navigate('Booking', {})}
+          style={[styles.cartBtnCircle, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}
+          activeOpacity={0.7}
+        >
+          <Text style={{ fontSize: 16 }}>🛒</Text>
+          {cartTotalCount > 0 && (
+            <View style={styles.cartBadgeDot}>
+              <Text style={styles.cartBadgeText}>{cartTotalCount}</Text>
+            </View>
+          )}
+        </TouchableOpacity>
+      </View>
+
       {/* Top Slot Pill Bar */}
       {availableSlots.length > 0 && (
         <View
@@ -493,6 +529,56 @@ export default function MenuScreen({ navigation }: any) {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
+  menuHeaderBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+  },
+  backBtnCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  menuHeaderTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  menuHeaderSub: {
+    fontSize: 11,
+    fontWeight: '500',
+    marginTop: 1,
+  },
+  cartBtnCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'relative',
+  },
+  cartBadgeDot: {
+    position: 'absolute',
+    top: -3,
+    right: -4,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#FF6B00',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 3,
+  },
+  cartBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 9,
+    fontWeight: '900',
+  },
   slotTabBar: {
     paddingVertical: 10,
     borderBottomWidth: 1,
