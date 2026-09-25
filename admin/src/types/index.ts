@@ -34,6 +34,7 @@ export interface MenuItem {
 
 export type OrderStatus =
   | 'booked'
+  | 'confirmed'
   | 'preparing'
   | 'out_for_delivery'
   | 'delivered'

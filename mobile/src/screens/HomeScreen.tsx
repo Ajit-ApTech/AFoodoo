@@ -401,8 +401,33 @@ export default function HomeScreen({ navigation }: any) {
         const selectedDailyDish = sub.daily_menu?.[todayStr] || {
           id: 'dish_sub_default',
           name: `${sub.plan_type || 'Tiffin'} Chef Special Meal`,
-          price: 0,
+          price: 120,
+          extraCharge: 0,
         };
+        const dishName = selectedDailyDish.name || `${sub.plan_type || 'Tiffin'} Daily Meal`;
+        const extraCharge = Number(selectedDailyDish.extraCharge) || 0;
+
+        // If premium dish selected, deduct extra charge from wallet
+        if (extraCharge > 0) {
+          try {
+            await updateDoc(doc(firestore, 'users', userDocId), {
+              wallet_balance: increment(-extraCharge),
+              updated_at: new Date().toISOString(),
+            });
+            await addDoc(collection(firestore, 'wallet_transactions'), {
+              user_id: userDocId,
+              user_phone: cleanPhone,
+              title: `Extra charge: ${dishName}`,
+              description: `Premium dish charge for ${sub.plan_type || 'Tiffin'} subscription (${nextCode})`,
+              amount: extraCharge,
+              type: 'debit',
+              timestamp: new Date().toISOString(),
+              created_at: new Date().toISOString(),
+            });
+          } catch (walletErr) {
+            console.log('Notice deducting extra dish charge:', walletErr);
+          }
+        }
 
         await addDoc(collection(firestore, 'orders'), {
           order_code: nextCode,
@@ -412,22 +437,24 @@ export default function HomeScreen({ navigation }: any) {
           user_phone: cleanPhone,
           customer_phone: cleanPhone,
           delivery_address: (user as any).address || (user as any).delivery_address || user.addresses?.[0]?.line1 || 'Potanga / Main Location',
+          menu_title: dishName,
           items: [
             {
               id: selectedDailyDish.id || 'dish_sub',
-              name: selectedDailyDish.name || `${sub.plan_type} Daily Meal`,
-              price: selectedDailyDish.price || 0,
+              name: dishName,
+              price: selectedDailyDish.price || 120,
+              extra_charge: extraCharge,
               quantity: 1,
             },
           ],
-          total_amount: 0,
-          subtotal: 0,
+          total_amount: extraCharge,
+          subtotal: extraCharge,
           delivery_fee: 0,
           platform_fee: 0,
           discount: 0,
-          payment_method: 'subscription',
+          payment_method: extraCharge > 0 ? 'subscription+wallet' : 'subscription',
           payment_status: 'paid',
-          status: 'confirmed',
+          status: 'booked',
           order_type: 'subscription_auto',
           subscription_id: sub.id,
           booking_date: todayStr,
@@ -444,7 +471,7 @@ export default function HomeScreen({ navigation }: any) {
 
         triggerLocalNotification(
           '🍱 Daily Tiffin Auto-Booked!',
-          `Your ${sub.plan_type || 'Tiffin'} meal for today has been booked and scheduled with the kitchen!`,
+          `Your ${dishName} for today has been booked and scheduled with the kitchen!`,
           { type: 'ORDER_UPDATE' }
         );
       } catch (err) {

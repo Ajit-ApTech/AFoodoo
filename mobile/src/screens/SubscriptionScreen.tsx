@@ -261,6 +261,62 @@ export default function SubscriptionScreen({ navigation, route }: any) {
       Alert.alert('Login Required', 'Please sign in to buy a subscription pack.');
       return;
     }
+    // Step 1: Prompt customer to customize/confirm their day-wise menu before payment!
+    setCustomizingSub(null); // null indicates purchasing a new plan
+
+    // Pre-populate upcoming plan days with default dishes from live menu
+    const initialMenu: Record<string, any> = { ...selectedDailyMenu };
+    const defaultItem = menuItems[0] || {
+      id: 'dish_thali_special',
+      title: "Chef's Special Thali",
+      price: 120,
+    };
+    const defaultDishName = defaultItem.title || defaultItem.name || "Chef's Special Thali";
+    const defaultPrice = defaultItem.price || 120;
+    const defaultExtra = Math.max(0, defaultPrice - 128);
+
+    for (let i = 0; i < 7; i++) {
+      const dateKey = dayjs().add(i, 'day').format('YYYY-MM-DD');
+      if (!initialMenu[dateKey]) {
+        initialMenu[dateKey] = {
+          id: defaultItem.id || `dish_${i}`,
+          name: defaultDishName,
+          price: defaultPrice,
+          extraCharge: defaultExtra,
+        };
+      }
+    }
+    setSelectedDailyMenu(initialMenu);
+    setShowMenuCustomizer(true);
+  };
+
+  const handleConfirmMenuAndProceedToPay = () => {
+    // Check wallet balance for extra charges if any
+    let totalExtra = 0;
+    Object.values(selectedDailyMenu).forEach((d: any) => {
+      if (d?.extraCharge > 0) totalExtra += d.extraCharge;
+    });
+
+    const walletBal = user?.wallet_balance ?? 0;
+    if (totalExtra > 0 && walletBal < totalExtra) {
+      Alert.alert(
+        'Insufficient Wallet Balance 👛',
+        `Your selected dishes include ₹${totalExtra} extra in premium charges, but your wallet balance is ₹${walletBal}.\n\nPlease top up your wallet or choose standard dishes included in the plan.`,
+        [
+          { text: 'Adjust Dishes', style: 'cancel' },
+          {
+            text: 'Top Up Wallet',
+            onPress: () => {
+              setShowMenuCustomizer(false);
+              navigation.navigate('Wallet');
+            },
+          },
+        ]
+      );
+      return;
+    }
+
+    setShowMenuCustomizer(false);
     setShowUpiModal(true);
   };
 
@@ -443,6 +499,22 @@ export default function SubscriptionScreen({ navigation, route }: any) {
     }
     return days;
   }, []);
+
+  // Dynamic scheduled days for Menu Customization modal (7 days starting today or from sub start_date)
+  const menuScheduleDays = useMemo(() => {
+    const startDate = customizingSub?.start_date ? dayjs(customizingSub.start_date) : dayjs();
+    const count = customizingSub ? (customizingSub.meals_total || 7) : 7;
+    const days = [];
+    for (let i = 0; i < Math.min(count, 7); i++) {
+      const d = startDate.add(i, 'day');
+      days.push({
+        dateStr: d.format('YYYY-MM-DD'),
+        label: d.format('dddd, MMM DD'),
+        isToday: d.isSame(dayjs(), 'day'),
+      });
+    }
+    return days;
+  }, [customizingSub, selectedPlan]);
 
   // Current month calendar days generator
   const currentMonthDays = useMemo(() => {
@@ -1225,7 +1297,7 @@ export default function SubscriptionScreen({ navigation, route }: any) {
                 <Text style={[styles.modalBackText, { color: theme.textPrimary }]}>← Back</Text>
               </TouchableOpacity>
               <Text style={[styles.modalTitle, { color: theme.textPrimary }]}>
-                Day-Wise Menu Plan
+                {customizingSub ? 'Customize Plan Menu' : `Select Meals (${selectedPlan?.title || 'Plan'})`}
               </Text>
               <View style={{ width: 40 }} />
             </View>
@@ -1248,11 +1320,11 @@ export default function SubscriptionScreen({ navigation, route }: any) {
               </View>
 
               <Text style={[styles.actionSectionHeader, { color: theme.textPrimary, marginTop: 16 }]}>
-                Select Dish for Each Scheduled Day
+                Select Dish for Each Day ({menuScheduleDays.length} Days)
               </Text>
 
-              {/* 7 Days List */}
-              {weekDays.map(wd => {
+              {/* Days List */}
+              {menuScheduleDays.map(wd => {
                 const dayDish = selectedDailyMenu[wd.dateStr];
                 return (
                   <View
@@ -1264,7 +1336,7 @@ export default function SubscriptionScreen({ navigation, route }: any) {
                   >
                     <View style={{ flex: 1 }}>
                       <Text style={[styles.dayMenuDate, { color: theme.primary }]}>
-                        {dayjs(wd.dateStr).format('dddd, MMM DD')}
+                        {wd.label} {wd.isToday ? '• TODAY' : ''}
                       </Text>
                       <Text style={[styles.dayMenuDish, { color: theme.textPrimary }]}>
                         {dayDish?.name || "Standard Chef's Special Thali"}
@@ -1273,7 +1345,11 @@ export default function SubscriptionScreen({ navigation, route }: any) {
                         <Text style={styles.extraChargeText}>
                           +₹{dayDish.extraCharge} extra from wallet
                         </Text>
-                      ) : null}
+                      ) : (
+                        <Text style={{ fontSize: 10, color: '#10B981', fontWeight: 'bold', marginTop: 2 }}>
+                          ✓ Included in Plan
+                        </Text>
+                      )}
                     </View>
 
                     <TouchableOpacity
@@ -1288,15 +1364,26 @@ export default function SubscriptionScreen({ navigation, route }: any) {
                 );
               })}
 
-              {/* Save Button */}
-              <TouchableOpacity
-                style={[styles.subscribeBtn, { backgroundColor: theme.primary, marginTop: 24 }]}
-                onPress={handleSaveDailyMenuToFirestore}
-              >
-                <Text style={[styles.subscribeBtnText, { color: theme.buttonText }]}>
-                  Save Menu Schedule 💾
-                </Text>
-              </TouchableOpacity>
+              {/* Action Button */}
+              {customizingSub ? (
+                <TouchableOpacity
+                  style={[styles.subscribeBtn, { backgroundColor: theme.primary, marginTop: 24 }]}
+                  onPress={handleSaveDailyMenuToFirestore}
+                >
+                  <Text style={[styles.subscribeBtnText, { color: theme.buttonText }]}>
+                    Save Menu Schedule 💾
+                  </Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  style={[styles.subscribeBtn, { backgroundColor: theme.primary, marginTop: 24 }]}
+                  onPress={handleConfirmMenuAndProceedToPay}
+                >
+                  <Text style={[styles.subscribeBtnText, { color: theme.buttonText }]}>
+                    Confirm Meals & Pay ₹{selectedPlan?.price || 649} ➔
+                  </Text>
+                </TouchableOpacity>
+              )}
             </ScrollView>
 
             {/* Sub-modal: Pick Dish from live menu */}

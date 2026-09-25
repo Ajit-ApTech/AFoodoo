@@ -492,7 +492,7 @@ export default function OrderQueuePage() {
 
               {/* Action Buttons */}
               <div className="pt-2 border-t border-slate-800 space-y-2">
-                {order.status === 'booked' && (
+                {(order.status === 'booked' || order.status === 'confirmed') && (
                   <button
                     onClick={() => handleAdvanceStatus(order.id, 'preparing')}
                     className="w-full bg-amber-600 hover:bg-amber-500 text-white font-bold py-2 rounded-xl text-xs shadow-md transition-all flex items-center justify-center gap-2"
