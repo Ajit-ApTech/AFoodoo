@@ -256,6 +256,35 @@ export default function SubscriptionScreen({ navigation, route }: any) {
     } catch (e) {}
   }, []);
 
+  // Dynamic scheduled days for Menu Customization modal (7 days starting today or from sub start_date)
+  const menuScheduleDays = useMemo(() => {
+    const startDate = customizingSub?.start_date ? dayjs(customizingSub.start_date) : dayjs();
+    const count = customizingSub ? (customizingSub.meals_total || 7) : 7;
+    const days = [];
+    for (let i = 0; i < Math.min(count, 7); i++) {
+      const d = startDate.add(i, 'day');
+      days.push({
+        dateStr: d.format('YYYY-MM-DD'),
+        label: d.format('dddd, MMM DD'),
+        isToday: d.isSame(dayjs(), 'day'),
+      });
+    }
+    return days;
+  }, [customizingSub, selectedPlan]);
+
+  // Total upfront meal upgrades for new plan purchase
+  const upfrontUpgradesTotal = useMemo(() => {
+    if (customizingSub) return 0;
+    let total = 0;
+    menuScheduleDays.forEach(wd => {
+      const item = selectedDailyMenu[wd.dateStr];
+      if (item?.extraCharge > 0) total += Number(item.extraCharge);
+    });
+    return total;
+  }, [customizingSub, selectedDailyMenu, menuScheduleDays]);
+
+  const finalPurchasePrice = (selectedPlan?.price || 0) + upfrontUpgradesTotal;
+
   const handleSubscribe = () => {
     if (!user) {
       Alert.alert('Login Required', 'Please sign in to buy a subscription pack.');
@@ -291,31 +320,7 @@ export default function SubscriptionScreen({ navigation, route }: any) {
   };
 
   const handleConfirmMenuAndProceedToPay = () => {
-    // Check wallet balance for extra charges if any
-    let totalExtra = 0;
-    Object.values(selectedDailyMenu).forEach((d: any) => {
-      if (d?.extraCharge > 0) totalExtra += d.extraCharge;
-    });
-
-    const walletBal = user?.wallet_balance ?? 0;
-    if (totalExtra > 0 && walletBal < totalExtra) {
-      Alert.alert(
-        'Insufficient Wallet Balance 👛',
-        `Your selected dishes include ₹${totalExtra} extra in premium charges, but your wallet balance is ₹${walletBal}.\n\nPlease top up your wallet or choose standard dishes included in the plan.`,
-        [
-          { text: 'Adjust Dishes', style: 'cancel' },
-          {
-            text: 'Top Up Wallet',
-            onPress: () => {
-              setShowMenuCustomizer(false);
-              navigation.navigate('Wallet');
-            },
-          },
-        ]
-      );
-      return;
-    }
-
+    // When purchasing upfront, meal upgrades are added to the UPI payment amount directly
     setShowMenuCustomizer(false);
     setShowUpiModal(true);
   };
@@ -330,12 +335,21 @@ export default function SubscriptionScreen({ navigation, route }: any) {
       const creditAmount =
         selectedPlan.wallet_credit || PLAN_WALLET_CREDITS[selectedPlan.id] || selectedPlan.price || 0;
 
+      // Mark all selected dishes as covered (paid_upfront: true)
+      const finalizedMenu: Record<string, any> = {};
+      Object.entries(selectedDailyMenu).forEach(([dateStr, item]: [string, any]) => {
+        finalizedMenu[dateStr] = {
+          ...item,
+          paid_upfront: true,
+        };
+      });
+
       await submitPaymentRequest({
         type: 'subscription',
         userId: userDocId,
         userName: user.name || `Customer (${cleanPhone})`,
         userPhone: cleanPhone,
-        amount: selectedPlan.price,
+        amount: finalPurchasePrice,
         utrNumber,
         subscriptionPayload: {
           plan_title: selectedPlan.title,
@@ -343,14 +357,16 @@ export default function SubscriptionScreen({ navigation, route }: any) {
           duration_days: durationDays,
           wallet_credit_bonus: creditAmount,
           auto_renew: autoRenew,
-          daily_menu: selectedDailyMenu,
+          daily_menu: finalizedMenu,
+          base_price: selectedPlan.price,
+          meal_upgrades_total: upfrontUpgradesTotal,
         },
       });
 
       setShowUpiModal(false);
       Alert.alert(
         'Subscription Request Sent ⏳',
-        `Your subscription request for ${selectedPlan.title} (₹${selectedPlan.price}) has been submitted for admin verification.\n\nYour plan and ₹${creditAmount.toLocaleString(
+        `Your subscription request for ${selectedPlan.title} (₹${finalPurchasePrice}) has been submitted for admin verification.\n\nYour plan and ₹${creditAmount.toLocaleString(
           'en-IN'
         )} wallet bonus will be activated as soon as the admin verifies your payment!`
       );
@@ -433,25 +449,32 @@ export default function SubscriptionScreen({ navigation, route }: any) {
     const dishPrice = dish.price || 0;
     const extraCharge = Math.max(0, dishPrice - baseDailyAllowance);
 
-    if (extraCharge > 0) {
-      const walletBal = user?.wallet_balance ?? 0;
-      if (walletBal < extraCharge) {
-        Alert.alert(
-          'Insufficient Wallet Balance 👛',
-          `This premium dish (₹${dishPrice}) requires ₹${extraCharge} extra above your plan allowance. Your current wallet balance is ₹${walletBal}.\n\nPlease top up your wallet or choose another dish.`,
-          [
-            { text: 'Cancel', style: 'cancel' },
-            {
-              text: 'Top Up Wallet',
-              onPress: () => {
-                setShowMenuCustomizer(false);
-                setManagingSub(null);
-                navigation.navigate('Wallet');
+    // If modifying an ALREADY ACTIVE subscription, check wallet budget for the upgrade difference
+    if (customizingSub) {
+      const oldDish = (customizingSub.daily_menu || {})[dateKey];
+      const oldExtra = oldDish?.paid_upfront ? (oldDish?.extraCharge || 0) : (oldDish?.extraCharge || 0);
+      const upgradeDiff = Math.max(0, extraCharge - oldExtra);
+
+      if (upgradeDiff > 0) {
+        const walletBal = user?.wallet_balance ?? 0;
+        if (walletBal < upgradeDiff) {
+          Alert.alert(
+            'Insufficient Wallet Balance 👛',
+            `Upgrading this meal to ${dish.name || dish.title} requires ₹${upgradeDiff} extra from your wallet. Your current balance is ₹${walletBal}.\n\nPlease top up your wallet or choose another dish.`,
+            [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Top Up Wallet',
+                onPress: () => {
+                  setShowMenuCustomizer(false);
+                  setManagingSub(null);
+                  navigation.navigate('Wallet');
+                },
               },
-            },
-          ]
-        );
-        return;
+            ]
+          );
+          return;
+        }
       }
     }
 
@@ -468,16 +491,88 @@ export default function SubscriptionScreen({ navigation, route }: any) {
   };
 
   const handleSaveDailyMenuToFirestore = async () => {
-    if (!customizingSub) return;
+    if (!customizingSub || !user) return;
     try {
+      // Calculate total incremental upgrade charges for changed dishes
+      let totalIncrementalCharge = 0;
+      const originalMenu = customizingSub.daily_menu || {};
+
+      Object.entries(selectedDailyMenu).forEach(([dateStr, newDish]: [string, any]) => {
+        const oldDish = originalMenu[dateStr];
+        const oldExtra = oldDish?.paid_upfront ? (oldDish?.extraCharge || 0) : (oldDish?.extraCharge || 0);
+        const newExtra = newDish?.extraCharge || 0;
+        if (newExtra > oldExtra) {
+          totalIncrementalCharge += (newExtra - oldExtra);
+        }
+      });
+
+      const walletBal = user?.wallet_balance ?? 0;
+      if (totalIncrementalCharge > 0) {
+        if (walletBal < totalIncrementalCharge) {
+          Alert.alert(
+            'Insufficient Wallet Balance 👛',
+            `An extra ₹${totalIncrementalCharge} is required from your wallet for your upgraded meals, but your wallet balance is ₹${walletBal}.\n\nPlease top up your wallet to apply these changes.`,
+            [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Top Up Wallet',
+                onPress: () => {
+                  setShowMenuCustomizer(false);
+                  setManagingSub(null);
+                  navigation.navigate('Wallet');
+                },
+              },
+            ]
+          );
+          return;
+        }
+
+        // Deduct incremental charge from user's wallet
+        const { doc, updateDoc, increment, collection, addDoc } = require('firebase/firestore');
+        const { firestore } = require('../firebaseConfig');
+        const cleanPhone = user.phone ? user.phone.trim() : '';
+        const userDocId = user.id || `usr_${cleanPhone.replace(/\D/g, '')}`;
+
+        await updateDoc(doc(firestore, 'users', userDocId), {
+          wallet_balance: increment(-totalIncrementalCharge),
+          updated_at: new Date().toISOString(),
+        });
+
+        await addDoc(collection(firestore, 'wallet_transactions'), {
+          user_id: userDocId,
+          user_phone: cleanPhone,
+          amount: totalIncrementalCharge,
+          type: 'debit',
+          title: `Meal Upgrade for ${customizingSub.plan_type || 'Subscription'}`,
+          description: `Deducted for premium dish upgrades`,
+          subscription_id: customizingSub.id,
+          timestamp: new Date().toISOString(),
+          created_at: new Date().toISOString(),
+        });
+      }
+
+      // Mark updated menu dishes as covered
+      const updatedMenu: Record<string, any> = {};
+      Object.entries(selectedDailyMenu).forEach(([d, item]: [string, any]) => {
+        updatedMenu[d] = {
+          ...item,
+          paid_upfront: true,
+        };
+      });
+
       const { doc, updateDoc } = require('firebase/firestore');
       const { firestore } = require('../firebaseConfig');
       await updateDoc(doc(firestore, 'subscriptions', customizingSub.id), {
-        daily_menu: selectedDailyMenu,
+        daily_menu: updatedMenu,
         updated_at: new Date().toISOString(),
       });
 
-      Alert.alert('Menu Saved 🍱', 'Your custom daily meal schedule has been saved successfully!');
+      Alert.alert(
+        'Menu Saved 🍱',
+        totalIncrementalCharge > 0
+          ? `Your custom meal schedule has been saved. ₹${totalIncrementalCharge} was deducted from your wallet for premium upgrades.`
+          : 'Your custom daily meal schedule has been saved successfully!'
+      );
       setShowMenuCustomizer(false);
     } catch (e: any) {
       Alert.alert('Error', e.message);
@@ -499,22 +594,6 @@ export default function SubscriptionScreen({ navigation, route }: any) {
     }
     return days;
   }, []);
-
-  // Dynamic scheduled days for Menu Customization modal (7 days starting today or from sub start_date)
-  const menuScheduleDays = useMemo(() => {
-    const startDate = customizingSub?.start_date ? dayjs(customizingSub.start_date) : dayjs();
-    const count = customizingSub ? (customizingSub.meals_total || 7) : 7;
-    const days = [];
-    for (let i = 0; i < Math.min(count, 7); i++) {
-      const d = startDate.add(i, 'day');
-      days.push({
-        dateStr: d.format('YYYY-MM-DD'),
-        label: d.format('dddd, MMM DD'),
-        isToday: d.isSame(dayjs(), 'day'),
-      });
-    }
-    return days;
-  }, [customizingSub, selectedPlan]);
 
   // Current month calendar days generator
   const currentMonthDays = useMemo(() => {
@@ -1343,7 +1422,7 @@ export default function SubscriptionScreen({ navigation, route }: any) {
                       </Text>
                       {dayDish?.extraCharge > 0 ? (
                         <Text style={styles.extraChargeText}>
-                          +₹{dayDish.extraCharge} extra from wallet
+                          +₹{dayDish.extraCharge} {customizingSub ? 'extra from wallet' : 'meal upgrade'}
                         </Text>
                       ) : (
                         <Text style={{ fontSize: 10, color: '#10B981', fontWeight: 'bold', marginTop: 2 }}>
@@ -1363,6 +1442,51 @@ export default function SubscriptionScreen({ navigation, route }: any) {
                   </View>
                 );
               })}
+              {/* Cost Summary Breakdown for Initial Purchase */}
+              {!customizingSub && (
+                <View
+                  style={[
+                    styles.confirmBox,
+                    {
+                      backgroundColor: theme.surface,
+                      borderColor: theme.surfaceBorder,
+                      marginTop: 18,
+                      marginBottom: 10,
+                    },
+                  ]}
+                >
+                  <Text style={[styles.confirmSectionTitle, { color: theme.textPrimary }]}>
+                    Payment Summary
+                  </Text>
+                  <View style={styles.confirmRow}>
+                    <Text style={[styles.confirmLabel, { color: theme.textSecondary }]}>
+                      {selectedPlan?.title || 'Base Plan'}
+                    </Text>
+                    <Text style={[styles.confirmVal, { color: theme.textPrimary }]}>
+                      ₹{selectedPlan?.price || 0}
+                    </Text>
+                  </View>
+                  {upfrontUpgradesTotal > 0 ? (
+                    <View style={styles.confirmRow}>
+                      <Text style={[styles.confirmLabel, { color: '#F97316' }]}>
+                        Premium Meal Upgrades ({menuScheduleDays.filter(wd => selectedDailyMenu[wd.dateStr]?.extraCharge > 0).length} days)
+                      </Text>
+                      <Text style={[styles.confirmVal, { color: '#F97316' }]}>
+                        +₹{upfrontUpgradesTotal}
+                      </Text>
+                    </View>
+                  ) : null}
+                  <View style={[styles.divider, { backgroundColor: theme.surfaceBorder }]} />
+                  <View style={styles.confirmRow}>
+                    <Text style={[styles.confirmLabel, { color: theme.textPrimary, fontWeight: '800' }]}>
+                      Total Payable via Direct UPI
+                    </Text>
+                    <Text style={[styles.confirmVal, { color: theme.primary, fontSize: 16 }]}>
+                      ₹{finalPurchasePrice}
+                    </Text>
+                  </View>
+                </View>
+              )}
 
               {/* Action Button */}
               {customizingSub ? (
@@ -1376,11 +1500,11 @@ export default function SubscriptionScreen({ navigation, route }: any) {
                 </TouchableOpacity>
               ) : (
                 <TouchableOpacity
-                  style={[styles.subscribeBtn, { backgroundColor: theme.primary, marginTop: 24 }]}
+                  style={[styles.subscribeBtn, { backgroundColor: theme.primary, marginTop: 14 }]}
                   onPress={handleConfirmMenuAndProceedToPay}
                 >
                   <Text style={[styles.subscribeBtnText, { color: theme.buttonText }]}>
-                    Confirm Meals & Pay ₹{selectedPlan?.price || 649} ➔
+                    Confirm Meals & Pay ₹{finalPurchasePrice} via UPI ➔
                   </Text>
                 </TouchableOpacity>
               )}
@@ -1454,7 +1578,7 @@ export default function SubscriptionScreen({ navigation, route }: any) {
       {/* UPI Payment Modal */}
       <UpiPaymentModal
         visible={showUpiModal}
-        amount={selectedPlan?.price || 0}
+        amount={finalPurchasePrice}
         onClose={() => setShowUpiModal(false)}
         onConfirmPaid={handleConfirmSubscription}
         onConfirm={handleConfirmSubscription}

@@ -407,28 +407,6 @@ export default function HomeScreen({ navigation }: any) {
         const dishName = selectedDailyDish.name || `${sub.plan_type || 'Tiffin'} Daily Meal`;
         const extraCharge = Number(selectedDailyDish.extraCharge) || 0;
 
-        // If premium dish selected, deduct extra charge from wallet
-        if (extraCharge > 0) {
-          try {
-            await updateDoc(doc(firestore, 'users', userDocId), {
-              wallet_balance: increment(-extraCharge),
-              updated_at: new Date().toISOString(),
-            });
-            await addDoc(collection(firestore, 'wallet_transactions'), {
-              user_id: userDocId,
-              user_phone: cleanPhone,
-              title: `Extra charge: ${dishName}`,
-              description: `Premium dish charge for ${sub.plan_type || 'Tiffin'} subscription (${nextCode})`,
-              amount: extraCharge,
-              type: 'debit',
-              timestamp: new Date().toISOString(),
-              created_at: new Date().toISOString(),
-            });
-          } catch (walletErr) {
-            console.log('Notice deducting extra dish charge:', walletErr);
-          }
-        }
-
         await addDoc(collection(firestore, 'orders'), {
           order_code: nextCode,
           user_id: userDocId,
@@ -443,16 +421,15 @@ export default function HomeScreen({ navigation }: any) {
               id: selectedDailyDish.id || 'dish_sub',
               name: dishName,
               price: selectedDailyDish.price || 120,
-              extra_charge: extraCharge,
               quantity: 1,
             },
           ],
-          total_amount: extraCharge,
-          subtotal: extraCharge,
+          total_amount: 0,
+          subtotal: 0,
           delivery_fee: 0,
           platform_fee: 0,
           discount: 0,
-          payment_method: extraCharge > 0 ? 'subscription+wallet' : 'subscription',
+          payment_method: 'subscription',
           payment_status: 'paid',
           status: 'booked',
           order_type: 'subscription_auto',
