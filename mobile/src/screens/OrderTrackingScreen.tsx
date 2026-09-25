@@ -511,6 +511,8 @@ export default function OrderTrackingScreen({ route, navigation }: any) {
                         const payMethodLabel =
                           ord.payment_method === 'wallet'
                             ? '👛 Paid via AFoodoo Wallet'
+                            : ord.payment_method === 'subscription'
+                            ? '🍱 Tiffin Subscription (Wallet)'
                             : ord.payment_method === 'upi'
                             ? '📱 Paid via Direct UPI'
                             : ord.payment_method === 'cod'

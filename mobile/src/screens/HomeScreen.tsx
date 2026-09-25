@@ -424,6 +424,9 @@ export default function HomeScreen({ navigation }: any) {
               timestamp: new Date().toISOString(),
               created_at: new Date().toISOString(),
             });
+            if (user && user.wallet_balance !== undefined) {
+              setUser({ ...user, wallet_balance: Math.max(0, user.wallet_balance - mealPrice) });
+            }
           } catch (walletErr) {
             console.log('Notice deducting daily meal price from wallet:', walletErr);
           }
