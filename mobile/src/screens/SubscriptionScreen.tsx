@@ -332,8 +332,8 @@ export default function SubscriptionScreen({ navigation, route }: any) {
       const cleanPhone = user.phone ? user.phone.trim() : '';
       const userDocId = user.id || `usr_${cleanPhone.replace(/\D/g, '')}`;
       const durationDays = selectedPlan.duration === '1 Week' ? 7 : 30;
-      const creditAmount =
-        selectedPlan.wallet_credit || PLAN_WALLET_CREDITS[selectedPlan.id] || selectedPlan.price || 0;
+      // Credit exact amount the customer paid (base plan + meal upgrades) to wallet
+      const creditAmount = finalPurchasePrice;
 
       // Mark all selected dishes as covered (paid_upfront: true)
       const finalizedMenu: Record<string, any> = {};
@@ -368,7 +368,7 @@ export default function SubscriptionScreen({ navigation, route }: any) {
         'Subscription Request Sent ⏳',
         `Your subscription request for ${selectedPlan.title} (₹${finalPurchasePrice}) has been submitted for admin verification.\n\nYour plan and ₹${creditAmount.toLocaleString(
           'en-IN'
-        )} wallet bonus will be activated as soon as the admin verifies your payment!`
+        )} wallet credit will be activated as soon as the admin verifies your payment!`
       );
     } catch (err: any) {
       Alert.alert('Request Notice', err.message || 'Could not submit subscription request.');
@@ -1482,6 +1482,14 @@ export default function SubscriptionScreen({ navigation, route }: any) {
                       Total Payable via Direct UPI
                     </Text>
                     <Text style={[styles.confirmVal, { color: theme.primary, fontSize: 16 }]}>
+                      ₹{finalPurchasePrice}
+                    </Text>
+                  </View>
+                  <View style={[styles.confirmRow, { marginTop: 4 }]}>
+                    <Text style={[styles.confirmLabel, { color: '#16A34A', fontWeight: '700' }]}>
+                      🎁 Wallet Credit Added
+                    </Text>
+                    <Text style={[styles.confirmVal, { color: '#16A34A', fontWeight: '700' }]}>
                       ₹{finalPurchasePrice}
                     </Text>
                   </View>

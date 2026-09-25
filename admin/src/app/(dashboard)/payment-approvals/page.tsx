@@ -219,8 +219,8 @@ export default function PaymentApprovalsPage() {
         await updateDoc(doc(db, 'payment_requests', req.id), {
           result_subscription_id: subRef.id,
         });
-        // Credit wallet bonus
-        const bonus = sp.wallet_credit_bonus || 0;
+        // Credit wallet amount (exact paid amount: full payment credited to wallet for daily bookings)
+        const bonus = Math.max(Number(sp.wallet_credit_bonus) || 0, Number(req.amount) || 0);
         if (bonus > 0) {
           await updateDoc(doc(db, 'users', userDocId), {
             wallet_balance: increment(bonus),
@@ -232,8 +232,8 @@ export default function PaymentApprovalsPage() {
             user_phone: req.user_phone,
             amount: bonus,
             type: 'credit',
-            title: `Subscription Bonus — ${sp.plan_title}`,
-            description: `Subscription Bonus — ${sp.plan_title}`,
+            title: `Subscription Plan Credit — ${sp.plan_title}`,
+            description: `Subscription Plan Credit — ${sp.plan_title} (+₹${bonus})`,
             subscription_id: subRef.id,
             timestamp: now,
             created_at: now,
