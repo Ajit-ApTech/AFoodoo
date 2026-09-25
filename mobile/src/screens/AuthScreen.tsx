@@ -147,11 +147,11 @@ export default function AuthScreen({ navigation }: any) {
         <View style={styles.headerContainer}>
           <Image
             source={
-              theme.mode === 'dark'
+              isDark
                 ? require('../../assets/afoodoo-logo-light.png')
                 : require('../../assets/afoodoo-logo-dark.png')
             }
-            style={{ width: 230, height: 65, marginBottom: 8 }}
+            style={{ width: 220, height: 60, marginBottom: 8 }}
             resizeMode="contain"
           />
         </View>
@@ -354,11 +354,14 @@ const styles = StyleSheet.create({
   safeArea: { flex: 1 },
   container: {
     paddingHorizontal: 24,
-    paddingVertical: 32,
+    paddingTop: 16,
+    paddingBottom: 32,
   },
   headerContainer: {
     alignItems: 'center',
-    marginBottom: 28,
+    justifyContent: 'center',
+    paddingTop: 12,
+    marginBottom: 24,
   },
   brandLogo: {
     width: 84,
