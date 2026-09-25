@@ -405,7 +405,29 @@ export default function HomeScreen({ navigation }: any) {
           extraCharge: 0,
         };
         const dishName = selectedDailyDish.name || `${sub.plan_type || 'Tiffin'} Daily Meal`;
-        const extraCharge = Number(selectedDailyDish.extraCharge) || 0;
+        const mealPrice = Number(selectedDailyDish.price) || 120;
+
+        // Deduct the selected meal price from customer's subscription wallet balance
+        if (mealPrice > 0) {
+          try {
+            await updateDoc(doc(firestore, 'users', userDocId), {
+              wallet_balance: increment(-mealPrice),
+              updated_at: new Date().toISOString(),
+            });
+            await addDoc(collection(firestore, 'wallet_transactions'), {
+              user_id: userDocId,
+              user_phone: cleanPhone,
+              title: `Daily Meal: ${dishName}`,
+              description: `Auto-booked for ${activeSlot.name || sub.plan_type || 'Tiffin Slot'} (${nextCode})`,
+              amount: mealPrice,
+              type: 'debit',
+              timestamp: new Date().toISOString(),
+              created_at: new Date().toISOString(),
+            });
+          } catch (walletErr) {
+            console.log('Notice deducting daily meal price from wallet:', walletErr);
+          }
+        }
 
         await addDoc(collection(firestore, 'orders'), {
           order_code: nextCode,
@@ -420,16 +442,16 @@ export default function HomeScreen({ navigation }: any) {
             {
               id: selectedDailyDish.id || 'dish_sub',
               name: dishName,
-              price: selectedDailyDish.price || 120,
+              price: mealPrice,
               quantity: 1,
             },
           ],
-          total_amount: 0,
-          subtotal: 0,
+          total_amount: mealPrice,
+          subtotal: mealPrice,
           delivery_fee: 0,
           platform_fee: 0,
           discount: 0,
-          payment_method: 'subscription',
+          payment_method: 'wallet',
           payment_status: 'paid',
           status: 'booked',
           order_type: 'subscription_auto',
