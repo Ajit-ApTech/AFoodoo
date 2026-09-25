@@ -58,8 +58,9 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "fb04d89b-b5b3-4d16-a220-7e5f3a90d82c"
+        "projectId": "5e4bd696-e20b-4ad5-a0f8-58d185ec1e31"
       }
-    }
+    },
+    "owner": "ap-tech"
   }
 }
