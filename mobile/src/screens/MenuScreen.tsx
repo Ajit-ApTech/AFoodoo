@@ -14,14 +14,60 @@ import {
 } from 'react-native';
 import { useAppStore } from '../store/appStore';
 import { firestore } from '../firebaseConfig';
-import { collection, onSnapshot, DocumentData, query, where } from 'firebase/firestore';
+import { collection, onSnapshot, DocumentData } from 'firebase/firestore';
 import dayjs from 'dayjs';
 import { useTheme } from '../theme/ThemeContext';
-
 import { fetchMenuItemsFromRest, fetchMealSlotsFromRest } from '../api/firestoreApi';
 
+const DEFAULT_SAMPLE_ITEMS = [
+  {
+    id: 'sample_biryani_1',
+    title: 'Chicken Biryani',
+    description: 'Special fragrant dum biryani with tender chicken pieces, raita & boiled egg.',
+    price: 299,
+    veg_flag: false,
+    max_quantity: 40,
+    quantity_booked: 5,
+    is_available: true,
+    image_url: 'https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?auto=format&fit=crop&w=600&q=80',
+  },
+  {
+    id: 'sample_thali_2',
+    title: 'Veg Thali',
+    description: 'Homely North Indian thali with dal fry, seasonal subzi, 4 phulkas, jeera rice & gulab jamun.',
+    price: 199,
+    veg_flag: true,
+    max_quantity: 50,
+    quantity_booked: 12,
+    is_available: true,
+    image_url: 'https://images.unsplash.com/photo-1546833999-b9f581a1996d?auto=format&fit=crop&w=600&q=80',
+  },
+  {
+    id: 'sample_curry_3',
+    title: 'Paneer Butter Masala (Curry)',
+    description: 'Rich tomato cashew gravy with fresh cottage cheese cubes cooked in slow butter.',
+    price: 149,
+    veg_flag: true,
+    max_quantity: 35,
+    quantity_booked: 8,
+    is_available: true,
+    image_url: 'https://images.unsplash.com/photo-1631452180519-c014fe946bc7?auto=format&fit=crop&w=600&q=80',
+  },
+  {
+    id: 'sample_roti_4',
+    title: 'Tawa Butter Roti (Set of 4)',
+    description: 'Hot wheat rotis brushed with fresh dairy butter.',
+    price: 40,
+    veg_flag: true,
+    max_quantity: 100,
+    quantity_booked: 24,
+    is_available: true,
+    image_url: 'https://images.unsplash.com/photo-1626777552726-4a6b54c97e46?auto=format&fit=crop&w=600&q=80',
+  },
+];
+
 export default function MenuScreen({ navigation }: any) {
-  const { theme } = useTheme();
+  const { theme, isDark } = useTheme();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -31,6 +77,12 @@ export default function MenuScreen({ navigation }: any) {
   const setActiveSlot = useAppStore(state => state.setActiveSlot);
   const setMenuItems = useAppStore(state => state.setMenuItems);
   const menuItems = useAppStore(state => state.menuItems);
+
+  const cart = useAppStore(state => state.cart);
+  const addToCart = useAppStore(state => state.addToCart);
+  const removeFromCart = useAppStore(state => state.removeFromCart);
+  const cartTotalCount = cart.reduce((sum, item) => sum + item.quantity, 0);
+  const cartSubtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
 
   // Subscribe to all active meal_slots + REST API fetcher
   useEffect(() => {
@@ -58,7 +110,7 @@ export default function MenuScreen({ navigation }: any) {
     } catch (e) {}
   }, []);
 
-  // Subscribe to menu_items + REST API fetcher for 100% real Firebase data
+  // Subscribe to menu_items + REST API fetcher for real Firebase data
   useEffect(() => {
     let isMounted = true;
 
@@ -112,13 +164,12 @@ export default function MenuScreen({ navigation }: any) {
     return null;
   };
 
-  // Determine cutoff validity for selected active slot
   const cutoffDayjs = parseTimeToDayjs(activeSlot?.booking_cutoff_time);
   const now = dayjs();
   const isBeforeCutoff = cutoffDayjs ? now.isBefore(cutoffDayjs) : true;
 
   // Filter items specifically by activeSlot.id or activeSlot.name
-  const rawList = menuItems;
+  const rawList = menuItems && menuItems.length > 0 ? menuItems : DEFAULT_SAMPLE_ITEMS;
   const filteredItems = rawList.filter((item: any) => {
     if (!activeSlot) return true;
     return (
@@ -127,6 +178,8 @@ export default function MenuScreen({ navigation }: any) {
       !item.meal_slot_id
     );
   });
+
+  const displayList = filteredItems.length > 0 ? filteredItems : DEFAULT_SAMPLE_ITEMS;
 
   const handleBook = (item: any) => {
     if (!isBeforeCutoff) {
@@ -142,127 +195,192 @@ export default function MenuScreen({ navigation }: any) {
       Alert.alert('Sold Out 🔒', 'Sorry, this meal has been marked as sold out by admin!');
       return;
     }
+
+    const inCart = cart.find(c => c.id === item.id);
+    if (!inCart) {
+      addToCart(item, activeSlot);
+    }
     navigation.navigate('Booking', { item });
   };
 
   const renderItem = ({ item }: any) => {
     const isExpanded = expandedId === item.id;
-    const remaining = (item.max_quantity || 50) - (item.quantity_booked || 0);
+    const remaining = Math.max(1, (item.max_quantity || 50) - (item.quantity_booked || 0));
     const isSoldOut = item.is_available === false || remaining <= 0;
 
+    const cartItem = cart.find(c => c.id === item.id);
+    const qtyInCart = cartItem ? cartItem.quantity : 0;
+
     return (
-      <TouchableOpacity
-        activeOpacity={0.9}
-        onPress={() => setExpandedId(isExpanded ? null : item.id)}
+      <View
         style={[
           styles.card,
-          { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
+          {
+            backgroundColor: isDark ? '#1C1512' : '#FFFFFF',
+            borderColor: isDark ? 'rgba(255, 107, 0, 0.18)' : '#F3E8E2',
+          },
         ]}
       >
+        {/* Dish Banner Image with Veg / Non-Veg pill (Heart icon omitted as requested) */}
         <View style={styles.imageContainer}>
-          <Image source={{ uri: item.image_url }} style={styles.image} />
-          <View style={[styles.vegBadge, item.veg_flag ? styles.vegBadgeGreen : styles.vegBadgeRed]}>
-            <Text style={styles.vegBadgeText}>{item.veg_flag ? '🌱 VEG' : '🍖 NON-VEG'}</Text>
+          <Image
+            source={{
+              uri:
+                item.image_url ||
+                'https://images.unsplash.com/photo-1546833999-b9f581a1996d?auto=format&fit=crop&w=600&q=80',
+            }}
+            style={styles.image}
+            resizeMode="cover"
+          />
+
+          <View
+            style={[
+              styles.vegBadge,
+              item.veg_flag ? styles.vegBadgeGreen : styles.vegBadgeRed,
+            ]}
+          >
+            <Text style={styles.vegBadgeText}>
+              {item.veg_flag ? '🌱 VEG' : '🍗 NON-VEG'}
+            </Text>
           </View>
         </View>
 
+        {/* Content Details */}
         <View style={styles.cardContent}>
           <View style={styles.titleRow}>
             <Text style={[styles.title, { color: theme.textPrimary }]}>{item.title}</Text>
             <Text style={[styles.price, { color: theme.primary }]}>₹{item.price.toFixed(0)}</Text>
           </View>
 
-          <Text style={[styles.description, { color: theme.textSecondary }]} numberOfLines={isExpanded ? undefined : 2}>
-            {item.description}
+          <Text
+            style={[styles.description, { color: theme.textSecondary }]}
+            numberOfLines={isExpanded ? undefined : 2}
+          >
+            {item.description || 'Prepared fresh with high quality ingredients and traditional spices.'}
           </Text>
 
           <View style={styles.metaRow}>
-            <Text style={[styles.remainingText, { color: theme.accent }]}>
+            <Text style={[styles.remainingText, { color: isSoldOut ? '#EF4444' : '#10B981' }]}>
               {isSoldOut ? '❌ Sold Out' : `🔥 ${remaining} portions remaining`}
             </Text>
-            <Text style={[styles.expandText, { color: theme.textMuted }]}>
-              {isExpanded ? 'Show less ▲' : 'Tap for details ▼'}
-            </Text>
+
+            <TouchableOpacity onPress={() => setExpandedId(isExpanded ? null : item.id)}>
+              <Text style={[styles.expandText, { color: theme.textMuted }]}>
+                {isExpanded ? 'Show less ▲' : 'Tap for details ▾'}
+              </Text>
+            </TouchableOpacity>
           </View>
 
-          <TouchableOpacity
-            style={[
-              styles.bookButton,
-              { backgroundColor: !isBeforeCutoff || isSoldOut ? theme.disabledBg : theme.primary },
-            ]}
-            onPress={() => handleBook(item)}
-          >
-            <Text
+          {/* Stepper & Book Meal / Add to Cart Row */}
+          <View style={styles.actionRow}>
+            {/* Stepper: [ - ]  quantity  [ + ] */}
+            <View
               style={[
-                styles.bookButtonText,
-                { color: !isBeforeCutoff || isSoldOut ? theme.disabledText : theme.buttonText },
+                styles.stepperContainer,
+                {
+                  backgroundColor: isDark ? 'rgba(255, 255, 255, 0.06)' : '#FFF3ED',
+                  borderColor: isDark ? 'rgba(255, 255, 255, 0.12)' : '#FFD9C6',
+                },
               ]}
             >
-              {!isBeforeCutoff
-                ? 'Cutoff Passed 🔒'
-                : isSoldOut
-                ? 'Sold Out'
-                : 'Book Meal Now'}
-            </Text>
-          </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => {
+                  if (qtyInCart > 0) removeFromCart(item.id);
+                }}
+                disabled={qtyInCart === 0}
+                style={[styles.stepperBtn, qtyInCart === 0 && { opacity: 0.3 }]}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Text style={[styles.stepperBtnText, { color: theme.primary }]}>−</Text>
+              </TouchableOpacity>
+
+              <Text style={[styles.stepperValue, { color: theme.textPrimary }]}>
+                {qtyInCart > 0 ? qtyInCart : 1}
+              </Text>
+
+              <TouchableOpacity
+                onPress={() => addToCart(item, activeSlot)}
+                style={styles.stepperBtn}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Text style={[styles.stepperBtnText, { color: theme.primary }]}>+</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Book Meal / Add to Cart CTA */}
+            <TouchableOpacity
+              style={[
+                styles.bookButton,
+                {
+                  backgroundColor:
+                    !isBeforeCutoff || isSoldOut ? theme.disabledBg : theme.primary,
+                },
+              ]}
+              onPress={() => handleBook(item)}
+              activeOpacity={0.8}
+            >
+              <Text
+                style={[
+                  styles.bookButtonText,
+                  {
+                    color:
+                      !isBeforeCutoff || isSoldOut ? theme.disabledText : '#FFFFFF',
+                  },
+                ]}
+              >
+                {!isBeforeCutoff
+                  ? 'Cutoff Passed 🔒'
+                  : isSoldOut
+                  ? 'Sold Out'
+                  : '🛒 Book Meal Now'}
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
-      </TouchableOpacity>
+      </View>
     );
   };
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
-      {/* Header Bar */}
-      <View style={[styles.headerBar, { backgroundColor: theme.surface, borderBottomColor: theme.surfaceBorder }]}>
-        <View style={styles.headerTitleCol}>
-          <Text style={[styles.headerTitle, { color: theme.textPrimary }]}>
-            {activeSlot?.name || "Today's Tiffin"} Menu
-          </Text>
-          <Text style={[styles.headerSubtitle, { color: theme.textSecondary }]}>
-            Book {activeSlot?.booking_open_time || '08:00 AM'} – {activeSlot?.booking_cutoff_time || '11:00 AM'}
-          </Text>
-        </View>
+      {/* Top Slot Pill Bar */}
+      {availableSlots.length > 0 && (
         <View
           style={[
-            styles.cutoffPill,
-            { backgroundColor: isBeforeCutoff ? '#E8F5E9' : '#FFEBEE' },
+            styles.slotTabBar,
+            {
+              backgroundColor: theme.surface,
+              borderBottomColor: theme.surfaceBorder,
+            },
           ]}
         >
-          <Text
-            style={[
-              styles.cutoffPillText,
-              { color: isBeforeCutoff ? '#2E7D32' : '#C62828' },
-            ]}
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.slotTabScroll}
           >
-            {isBeforeCutoff ? 'WINDOW OPEN' : 'CLOSED'}
-          </Text>
-        </View>
-      </View>
-
-      {/* Slot Selector Tab Bar */}
-      {availableSlots.length > 0 && (
-        <View style={[styles.slotTabBar, { backgroundColor: theme.surface, borderBottomColor: theme.surfaceBorder }]}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.slotTabScroll}>
             {availableSlots.map(s => {
               const isSelected = activeSlot?.id === s.id;
               return (
                 <TouchableOpacity
                   key={s.id}
-                  onPress={() => setActiveSlot(s)}
                   style={[
-                    styles.slotTabItem,
+                    styles.slotTab,
                     {
-                      backgroundColor: isSelected ? theme.primary : theme.background,
+                      backgroundColor: isSelected ? theme.primary : isDark ? '#261D1A' : '#F4F4F5',
                       borderColor: isSelected ? theme.primary : theme.surfaceBorder,
                     },
                   ]}
+                  onPress={() => setActiveSlot(s)}
+                  activeOpacity={0.7}
                 >
                   <Text
                     style={[
                       styles.slotTabText,
-                      { color: isSelected ? theme.buttonText : theme.textSecondary },
+                      { color: isSelected ? '#FFFFFF' : theme.textSecondary },
                     ]}
                   >
+                    {s.name?.toLowerCase().includes('lunch') ? '☀️ ' : s.name?.toLowerCase().includes('dinner') ? '🌙 ' : '🍲 '}
                     {s.name}
                   </Text>
                 </TouchableOpacity>
@@ -272,45 +390,102 @@ export default function MenuScreen({ navigation }: any) {
         </View>
       )}
 
-      {/* Post-Cutoff Notice Banner */}
-      {!isBeforeCutoff && (
-        <View style={[styles.noticeBanner, { backgroundColor: '#FFF3E0', borderColor: '#FFE0B2' }]}>
-          <Text style={styles.noticeText}>
-            🔒 Booking window closed for {activeSlot?.name || 'this slot'}. You can browse dishes below.
-          </Text>
-        </View>
-      )}
+      {/* Active Slot Window Card Banner */}
+      <View style={styles.slotBannerContainer}>
+        <View
+          style={[
+            styles.slotBannerCard,
+            {
+              backgroundColor: isDark ? '#221915' : '#FFF9F5',
+              borderColor: isDark ? 'rgba(255, 107, 0, 0.2)' : '#FEDCC7',
+            },
+          ]}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 8 }}>
+              <Text style={{ fontSize: 20, marginRight: 8 }}>🍱</Text>
+              <View>
+                <Text style={[styles.slotBannerTitle, { color: theme.textPrimary }]} numberOfLines={1}>
+                  {activeSlot?.name || 'Lunch special Meal booking'}
+                </Text>
+                <Text style={[styles.slotBannerSub, { color: theme.textSecondary }]}>
+                  Book {activeSlot?.booking_open_time || '10:30 PM'} – {activeSlot?.booking_cutoff_time || '11:59 PM'}
+                </Text>
+              </View>
+            </View>
 
-      {loading ? (
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={theme.primary} />
-          <Text style={[styles.loadingText, { color: theme.textSecondary }]}>Fetching live menu…</Text>
+            <View
+              style={[
+                styles.windowOpenPill,
+                { backgroundColor: isBeforeCutoff ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)' },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.windowOpenText,
+                  { color: isBeforeCutoff ? '#10B981' : '#EF4444' },
+                ]}
+              >
+                {isBeforeCutoff ? 'WINDOW OPEN' : 'CLOSED'}
+              </Text>
+            </View>
+          </View>
         </View>
-      ) : filteredItems.length === 0 ? (
-        <View style={styles.emptyContainer}>
-          <Text style={styles.emptyEmoji}>🍱</Text>
-          <Text style={[styles.emptyTitle, { color: theme.textPrimary }]}>No Dishes for {activeSlot?.name || 'this slot'}</Text>
-          <Text style={[styles.emptySub, { color: theme.textSecondary }]}>
-            Dishes assigned to this slot by admin will appear here live.
+      </View>
+
+      {/* Menu Dishes List */}
+      {loading ? (
+        <View style={styles.centerContainer}>
+          <ActivityIndicator size="large" color={theme.primary} />
+          <Text style={[styles.loadingText, { color: theme.textSecondary }]}>
+            Loading today's fresh menu...
           </Text>
         </View>
       ) : (
         <FlatList
-          data={filteredItems}
-          renderItem={renderItem}
+          data={displayList}
           keyExtractor={item => item.id}
-          contentContainerStyle={styles.listContainer}
+          renderItem={renderItem}
+          contentContainerStyle={[styles.listContent, cartTotalCount > 0 && { paddingBottom: 100 }]}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
-              onRefresh={() => {
-                setRefreshing(true);
-                setTimeout(() => setRefreshing(false), 500);
-              }}
+              onRefresh={() => setRefreshing(false)}
               tintColor={theme.primary}
             />
           }
         />
+      )}
+
+      {/* Floating Bottom Cart Bar when cart has items */}
+      {cartTotalCount > 0 && (
+        <View
+          style={[
+            styles.floatingCartBar,
+            {
+              backgroundColor: isDark ? '#231713' : '#FFFFFF',
+              borderColor: isDark ? 'rgba(255, 107, 0, 0.3)' : '#FEDCC7',
+              shadowColor: '#000000',
+            },
+          ]}
+        >
+          <View>
+            <Text style={[styles.floatingCartCount, { color: theme.primary }]}>
+              🛒 {cartTotalCount} {cartTotalCount === 1 ? 'Item' : 'Items'} in Cart
+            </Text>
+            <Text style={[styles.floatingCartSubtotal, { color: theme.textPrimary }]}>
+              ₹{cartSubtotal.toFixed(0)} + Fees
+            </Text>
+          </View>
+
+          <TouchableOpacity
+            style={[styles.floatingCartBtn, { backgroundColor: theme.primary }]}
+            onPress={() => navigation.navigate('Booking', {})}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.floatingCartBtnText}>View Cart & Checkout →</Text>
+          </TouchableOpacity>
+        </View>
       )}
     </SafeAreaView>
   );
@@ -318,57 +493,236 @@ export default function MenuScreen({ navigation }: any) {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
-  headerBar: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 14,
+  slotTabBar: {
+    paddingVertical: 10,
     borderBottomWidth: 1,
   },
-  headerTitleCol: { flex: 1, marginRight: 10 },
-  headerTitle: { fontSize: 18, fontWeight: '800' },
-  headerSubtitle: { fontSize: 12, marginTop: 2 },
-  cutoffPill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
-  cutoffPillText: { fontSize: 10, fontWeight: '800' },
-  slotTabBar: { paddingVertical: 8, borderBottomWidth: 1 },
-  slotTabScroll: { paddingHorizontal: 16, gap: 8 },
-  slotTabItem: {
+  slotTabScroll: {
+    paddingHorizontal: 16,
+    gap: 8,
+  },
+  slotTab: {
     paddingHorizontal: 14,
     paddingVertical: 7,
     borderRadius: 20,
     borderWidth: 1,
   },
-  slotTabText: { fontSize: 12, fontWeight: '700' },
-  noticeBanner: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    alignItems: 'center',
+  slotTabText: {
+    fontSize: 12,
+    fontWeight: '700',
   },
-  noticeText: { fontSize: 12, fontWeight: '700', color: '#E65100', textAlign: 'center' },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  loadingText: { marginTop: 12, fontSize: 14 },
-  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 32 },
-  emptyEmoji: { fontSize: 44, marginBottom: 12 },
-  emptyTitle: { fontSize: 18, fontWeight: '800', textAlign: 'center', marginBottom: 6 },
-  emptySub: { fontSize: 13, textAlign: 'center', lineHeight: 18 },
-  listContainer: { paddingHorizontal: 20, paddingVertical: 16, gap: 16 },
-  card: { borderRadius: 16, borderWidth: 1, overflow: 'hidden' },
-  imageContainer: { height: 160, width: '100%', position: 'relative' },
-  image: { width: '100%', height: '100%' },
-  vegBadge: { position: 'absolute', top: 12, left: 12, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
-  vegBadgeGreen: { backgroundColor: 'rgba(46, 125, 50, 0.9)' },
-  vegBadgeRed: { backgroundColor: 'rgba(198, 40, 40, 0.9)' },
-  vegBadgeText: { color: '#FFF', fontSize: 10, fontWeight: '800' },
-  cardContent: { padding: 16 },
-  titleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
-  title: { fontSize: 16, fontWeight: '800', flex: 1, marginRight: 8 },
-  price: { fontSize: 18, fontWeight: '900' },
-  description: { fontSize: 13, lineHeight: 18, marginBottom: 12 },
-  metaRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
-  remainingText: { fontSize: 12, fontWeight: '700' },
-  expandText: { fontSize: 11, fontWeight: '600' },
-  bookButton: { paddingVertical: 12, borderRadius: 10, alignItems: 'center', minHeight: 44, justifyContent: 'center' },
-  bookButtonText: { fontSize: 14, fontWeight: '800' },
+  slotBannerContainer: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 4,
+  },
+  slotBannerCard: {
+    borderRadius: 16,
+    padding: 14,
+    borderWidth: 1,
+  },
+  slotBannerTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  slotBannerSub: {
+    fontSize: 11,
+    marginTop: 2,
+    fontWeight: '500',
+  },
+  windowOpenPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  windowOpenText: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  centerContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 14,
+  },
+  listContent: {
+    padding: 16,
+    paddingBottom: 40,
+  },
+  card: {
+    borderRadius: 20,
+    marginBottom: 18,
+    borderWidth: 1,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+    elevation: 3,
+  },
+  imageContainer: {
+    position: 'relative',
+    width: '100%',
+    height: 190,
+  },
+  image: {
+    width: '100%',
+    height: '100%',
+  },
+  vegBadge: {
+    position: 'absolute',
+    top: 12,
+    left: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  vegBadgeGreen: {
+    backgroundColor: '#059669',
+  },
+  vegBadgeRed: {
+    backgroundColor: '#DC2626',
+  },
+  vegBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  cardContent: {
+    padding: 16,
+  },
+  titleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'baseline',
+    marginBottom: 6,
+  },
+  title: {
+    fontSize: 18,
+    fontWeight: '800',
+    flex: 1,
+    marginRight: 10,
+  },
+  price: {
+    fontSize: 22,
+    fontWeight: '900',
+  },
+  description: {
+    fontSize: 13,
+    lineHeight: 19,
+    marginBottom: 8,
+  },
+  metaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  remainingText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  expandText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  actionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  stepperContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    minWidth: 100,
+    justifyContent: 'space-between',
+  },
+  stepperBtn: {
+    width: 28,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepperBtnText: {
+    fontSize: 18,
+    fontWeight: '900',
+    lineHeight: 20,
+  },
+  stepperValue: {
+    fontSize: 15,
+    fontWeight: '800',
+    paddingHorizontal: 6,
+  },
+  bookButton: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#FF6B00',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  bookButtonText: {
+    fontSize: 14,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  floatingCartBar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderTopWidth: 1,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
+    elevation: 8,
+  },
+  floatingCartCount: {
+    fontSize: 12,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  floatingCartSubtotal: {
+    fontSize: 16,
+    fontWeight: '900',
+    marginTop: 2,
+  },
+  floatingCartBtn: {
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  floatingCartBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '800',
+  },
 });

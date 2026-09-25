@@ -5,6 +5,29 @@ const API_KEY = 'AIzaSyC57TfyLD_-0PqJa1_rLiX49sSIMJ3XNI4';
 const PROJECT_ID = 'afoodoo';
 const BASE_URL = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
 
+export function unwrapFirestoreValue(val: any): any {
+  if (val === null || val === undefined) return null;
+  if (typeof val !== 'object') return val;
+  if ('stringValue' in val) return val.stringValue;
+  if ('booleanValue' in val) return val.booleanValue;
+  if ('integerValue' in val) return Number(val.integerValue);
+  if ('doubleValue' in val) return Number(val.doubleValue);
+  if ('timestampValue' in val) return val.timestampValue;
+  if ('nullValue' in val) return null;
+  if ('mapValue' in val) {
+    const res: any = {};
+    const subFields = val.mapValue?.fields || {};
+    for (const k of Object.keys(subFields)) {
+      res[k] = unwrapFirestoreValue(subFields[k]);
+    }
+    return res;
+  }
+  if ('arrayValue' in val) {
+    return (val.arrayValue?.values || []).map(unwrapFirestoreValue);
+  }
+  return val;
+}
+
 export function unwrapFirestoreDoc(docObj: any) {
   if (!docObj) return null;
   const id = docObj.name ? docObj.name.split('/').pop() : '';
@@ -12,15 +35,7 @@ export function unwrapFirestoreDoc(docObj: any) {
   const data: any = { id };
 
   for (const key of Object.keys(fields)) {
-    const valObj = fields[key];
-    if (!valObj) continue;
-    if ('stringValue' in valObj) data[key] = valObj.stringValue;
-    else if ('booleanValue' in valObj) data[key] = valObj.booleanValue;
-    else if ('integerValue' in valObj) data[key] = Number(valObj.integerValue);
-    else if ('doubleValue' in valObj) data[key] = Number(valObj.doubleValue);
-    else if ('arrayValue' in valObj) {
-      data[key] = (valObj.arrayValue?.values || []).map((v: any) => v.stringValue ?? v.integerValue ?? v);
-    }
+    data[key] = unwrapFirestoreValue(fields[key]);
   }
   return data;
 }
@@ -85,7 +100,12 @@ export async function syncUserWithFirestore(phone: string, defaultName?: string)
   try {
     const snap = await getDoc(userRef);
     if (snap.exists()) {
-      return { id: snap.id, ...snap.data() };
+      const existing: any = snap.data();
+      if (defaultName && defaultName.trim() && (!existing.name || existing.name.startsWith('Customer ('))) {
+        await updateDoc(userRef, { name: defaultName.trim() });
+        return { id: snap.id, ...existing, name: defaultName.trim() };
+      }
+      return { id: snap.id, ...existing };
     } else {
       const newUser = {
         name: defaultName || `Customer (${cleanPhone})`,

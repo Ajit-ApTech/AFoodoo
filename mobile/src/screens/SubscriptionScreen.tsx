@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -6,12 +6,12 @@ import {
   TouchableOpacity,
   Alert,
   TextInput,
-  Switch,
   SafeAreaView,
   ScrollView,
+  Modal,
+  Image,
 } from 'react-native';
 import { useAppStore } from '../store/appStore';
-import { fetchSubscriptions, pauseSubscription, createSubscription } from '../api/subscriptions';
 import { submitPaymentRequest } from '../api/payments';
 import dayjs from 'dayjs';
 import { useTheme } from '../theme/ThemeContext';
@@ -19,11 +19,11 @@ import { UpiPaymentModal } from '../components/UpiPaymentModal';
 
 // Wallet credit amounts credited when a plan is purchased.
 const PLAN_WALLET_CREDITS: Record<string, number> = {
-  p1: 1000,  // Lunch Weekly
-  p2: 3500,  // Lunch Monthly
-  p3: 1000,  // Dinner Weekly
-  p4: 4000,  // Dinner Monthly
-  p5: 7500,  // Lunch + Dinner Combo
+  p1: 1000, // Lunch Weekly
+  p2: 3500, // Lunch Monthly
+  p3: 1000, // Dinner Weekly
+  p4: 4000, // Dinner Monthly
+  p5: 7500, // Lunch + Dinner Combo
 };
 
 const AVAILABLE_PLANS = [
@@ -79,18 +79,49 @@ const AVAILABLE_PLANS = [
   },
 ];
 
-export default function SubscriptionScreen({ navigation }: any) {
-  const { theme } = useTheme();
+export default function SubscriptionScreen({ navigation, route }: any) {
+  const { theme, isDark } = useTheme();
   const user = useAppStore(state => state.user);
   const subscriptions = useAppStore(state => state.subscriptions);
   const setSubscriptions = useAppStore(state => state.setSubscriptions);
-  const creditWalletBalance = useAppStore(state => state.creditWalletBalance);
+
+  // Top Tabs: 'active' | 'past'
+  const [activeTab, setActiveTab] = useState<'active' | 'past'>('active');
 
   const [availablePlans, setAvailablePlans] = useState<any[]>(AVAILABLE_PLANS);
-  const [skipDate, setSkipDate] = useState(dayjs().add(1, 'day').format('YYYY-MM-DD'));
-  const [selectedPlan, setSelectedPlan] = useState<any>(AVAILABLE_PLANS[1]);
+  const [selectedPlan, setSelectedPlan] = useState<any>(AVAILABLE_PLANS[0]);
   const [autoRenew, setAutoRenew] = useState(true);
   const [loading, setLoading] = useState(false);
+
+  // Available Menu Items for Day-Wise Customization
+  const [menuItems, setMenuItems] = useState<any[]>([]);
+
+  // Manage Plan Modal (Step 2)
+  const [managingSub, setManagingSub] = useState<any | null>(null);
+  const managingSubRef = useRef<any>(null);
+
+  useEffect(() => {
+    managingSubRef.current = managingSub;
+  }, [managingSub]);
+
+  const handleCloseManageModal = () => {
+    setManagingSub(null);
+    if (route?.params?.manageSubId) {
+      navigation.setParams({ manageSubId: undefined });
+    }
+  };
+
+  // Skip Dates Modal (Step 3) & Confirmation (Step 4)
+  const [showSkipModal, setShowSkipModal] = useState(false);
+  const [skipStep, setSkipStep] = useState<'picker' | 'confirm'>('picker');
+  const [selectedSkipDates, setSelectedSkipDates] = useState<string[]>([]);
+  const [skipReason, setSkipReason] = useState('Not at home');
+
+  // Day-Wise Menu Customization Modal
+  const [showMenuCustomizer, setShowMenuCustomizer] = useState(false);
+  const [customizingSub, setCustomizingSub] = useState<any | null>(null);
+  const [selectedDailyMenu, setSelectedDailyMenu] = useState<Record<string, any>>({});
+  const [selectingForDateKey, setSelectingForDateKey] = useState<string | null>(null);
 
   // Live Cloud Firestore listener for admin-managed meal plans
   useEffect(() => {
@@ -112,28 +143,96 @@ export default function SubscriptionScreen({ navigation }: any) {
     } catch (e) {}
   }, []);
 
-  // Live Cloud Firestore subscription listener for user's active plan packs
+  // Live Cloud Firestore listener for menu items
+  useEffect(() => {
+    try {
+      const { collection, onSnapshot } = require('firebase/firestore');
+      const { firestore } = require('../firebaseConfig');
+      const unsub = onSnapshot(collection(firestore, 'menu_items'), (snap: any) => {
+        if (!snap.empty) {
+          const list = snap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
+          setMenuItems(list);
+        }
+      });
+      return unsub;
+    } catch (e) {}
+  }, []);
+
+  // Live Cloud Firestore subscription listener for user's plans
   useEffect(() => {
     if (!user?.phone) return;
     const cleanPhone = user.phone.trim();
     const userDocId = user.id || `usr_${cleanPhone.replace(/\D/g, '')}`;
 
     try {
-      const { collection, onSnapshot } = require('firebase/firestore');
+      const { collection, onSnapshot, doc, updateDoc } = require('firebase/firestore');
       const { firestore } = require('../firebaseConfig');
       const unsub = onSnapshot(collection(firestore, 'subscriptions'), (snap: any) => {
         if (!snap.empty) {
+          const now = dayjs();
           const list = snap.docs
             .map((d: any) => ({ id: d.id, ...d.data() }))
             .filter((d: any) => d.user_phone === cleanPhone || d.user_id === userDocId);
-          if (list.length > 0) {
-            setSubscriptions(list);
+
+          setSubscriptions(list);
+
+          // Update expired subscriptions to 'expired' status
+          list.forEach((sub: any) => {
+            const isExpired =
+              (sub.end_date && now.isAfter(dayjs(sub.end_date), 'day')) ||
+              (typeof sub.meals_remaining === 'number' && sub.meals_remaining <= 0);
+            if (isExpired && sub.status === 'active') {
+              updateDoc(doc(firestore, 'subscriptions', sub.id), {
+                status: 'expired',
+                updated_at: new Date().toISOString(),
+              }).catch(() => {});
+            }
+          });
+
+          // Sync managing sub if open
+          if (managingSubRef.current) {
+            const fresh = list.find((s: any) => s.id === managingSubRef.current.id);
+            if (fresh) setManagingSub(fresh);
           }
         }
       });
       return unsub;
     } catch (e) {}
   }, [user?.phone, user?.id]);
+
+  // Open manage modal if passed via route params (and clear param once consumed)
+  useEffect(() => {
+    if (route?.params?.manageSubId && subscriptions.length > 0) {
+      const target = subscriptions.find((s: any) => s.id === route.params.manageSubId);
+      if (target) {
+        setManagingSub(target);
+        navigation.setParams({ manageSubId: undefined });
+      }
+    }
+  }, [route?.params?.manageSubId, subscriptions]);
+
+  // Active vs Expired separation
+  const { activeSubs, expiredSubs } = useMemo(() => {
+    const now = dayjs();
+    const active: any[] = [];
+    const expired: any[] = [];
+
+    subscriptions.forEach((sub: any) => {
+      const isExpired =
+        sub.status === 'expired' ||
+        sub.status === 'cancelled' ||
+        (sub.end_date && now.isAfter(dayjs(sub.end_date), 'day')) ||
+        (typeof sub.meals_remaining === 'number' && sub.meals_remaining <= 0);
+
+      if (isExpired) {
+        expired.push(sub);
+      } else {
+        active.push(sub);
+      }
+    });
+
+    return { activeSubs: active, expiredSubs: expired };
+  }, [subscriptions]);
 
   // Read live UPI ID from Cloud Firestore settings/delivery_config
   const [upiId, setUpiId] = useState('afoodoo@upi');
@@ -172,7 +271,8 @@ export default function SubscriptionScreen({ navigation }: any) {
       const cleanPhone = user.phone ? user.phone.trim() : '';
       const userDocId = user.id || `usr_${cleanPhone.replace(/\D/g, '')}`;
       const durationDays = selectedPlan.duration === '1 Week' ? 7 : 30;
-      const creditAmount = selectedPlan.wallet_credit || PLAN_WALLET_CREDITS[selectedPlan.id] || selectedPlan.price || 0;
+      const creditAmount =
+        selectedPlan.wallet_credit || PLAN_WALLET_CREDITS[selectedPlan.id] || selectedPlan.price || 0;
 
       await submitPaymentRequest({
         type: 'subscription',
@@ -187,13 +287,16 @@ export default function SubscriptionScreen({ navigation }: any) {
           duration_days: durationDays,
           wallet_credit_bonus: creditAmount,
           auto_renew: autoRenew,
+          daily_menu: selectedDailyMenu,
         },
       });
 
       setShowUpiModal(false);
       Alert.alert(
         'Subscription Request Sent ⏳',
-        `Your subscription request for ${selectedPlan.title} (₹${selectedPlan.price}) has been submitted for admin verification.\n\nYour plan and ₹${creditAmount.toLocaleString('en-IN')} wallet bonus will be activated as soon as the admin verifies your payment!`
+        `Your subscription request for ${selectedPlan.title} (₹${selectedPlan.price}) has been submitted for admin verification.\n\nYour plan and ₹${creditAmount.toLocaleString(
+          'en-IN'
+        )} wallet bonus will be activated as soon as the admin verifies your payment!`
       );
     } catch (err: any) {
       Alert.alert('Request Notice', err.message || 'Could not submit subscription request.');
@@ -202,227 +305,1077 @@ export default function SubscriptionScreen({ navigation }: any) {
     }
   };
 
-  const handlePause = async (subId: string) => {
-    if (!skipDate) {
-      Alert.alert('Select Date', 'Please enter a skip date (YYYY-MM-DD)');
-      return;
-    }
+  // Toggle Pause/Resume for a Subscription
+  const handleTogglePause = async (sub: any) => {
+    const isPaused = sub.is_paused || sub.status === 'PAUSED';
+    const newStatus = isPaused ? 'active' : 'PAUSED';
 
     try {
-      const { doc, updateDoc, arrayUnion } = require('firebase/firestore');
+      const { doc, updateDoc } = require('firebase/firestore');
       const { firestore } = require('../firebaseConfig');
-      await updateDoc(doc(firestore, 'subscriptions', subId), {
-        is_paused: true,
-        status: 'PAUSED',
-        paused_dates: arrayUnion(skipDate),
+      await updateDoc(doc(firestore, 'subscriptions', sub.id), {
+        is_paused: !isPaused,
+        status: newStatus,
+        updated_at: new Date().toISOString(),
       });
-    } catch (e) {
-      console.log('Notice pausing subscription in Firestore:', e);
+
+      Alert.alert(
+        isPaused ? 'Deliveries Resumed ▶️' : 'Deliveries Paused ⏸️',
+        isPaused
+          ? 'Your meal deliveries have resumed.'
+          : 'Your daily meal deliveries are paused. You can resume anytime!'
+      );
+    } catch (e: any) {
+      Alert.alert('Error', e.message);
+    }
+  };
+
+  // Open Skip Specific Dates Modal
+  const openSkipModalForSub = (sub: any) => {
+    setManagingSub(sub);
+    setSelectedSkipDates([]);
+    setSkipStep('picker');
+    setShowSkipModal(true);
+  };
+
+  // Confirm and Apply Skipped Dates
+  const handleConfirmSkipDates = async () => {
+    if (!managingSub || selectedSkipDates.length === 0) return;
+
+    try {
+      const { doc, updateDoc } = require('firebase/firestore');
+      const { firestore } = require('../firebaseConfig');
+
+      const existingDates = managingSub.paused_dates || [];
+      const updatedDates = Array.from(new Set([...existingDates, ...selectedSkipDates])).sort();
+
+      await updateDoc(doc(firestore, 'subscriptions', managingSub.id), {
+        paused_dates: updatedDates,
+        updated_at: new Date().toISOString(),
+      });
+
+      Alert.alert(
+        'Meals Skipped Successfully ⏸️',
+        `${selectedSkipDates.length} meal(s) have been skipped. These dates will not be delivered and your balance is saved!`
+      );
+      setShowSkipModal(false);
+    } catch (e: any) {
+      Alert.alert('Error', e.message);
+    }
+  };
+
+  // Open Day-Wise Menu Customizer
+  const openMenuCustomizer = (sub: any) => {
+    setCustomizingSub(sub);
+    setSelectedDailyMenu(sub.daily_menu || {});
+    setShowMenuCustomizer(true);
+  };
+
+  // Save Day-Wise Menu Selection with Wallet Budget Check
+  const handleSelectMenuItemForDay = (dish: any, dateKey: string) => {
+    const baseDailyAllowance = 128; // standard daily allowance
+    const dishPrice = dish.price || 0;
+    const extraCharge = Math.max(0, dishPrice - baseDailyAllowance);
+
+    if (extraCharge > 0) {
+      const walletBal = user?.wallet_balance ?? 0;
+      if (walletBal < extraCharge) {
+        Alert.alert(
+          'Insufficient Wallet Balance 👛',
+          `This premium dish (₹${dishPrice}) requires ₹${extraCharge} extra above your plan allowance. Your current wallet balance is ₹${walletBal}.\n\nPlease top up your wallet or choose another dish.`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Top Up Wallet',
+              onPress: () => {
+                setShowMenuCustomizer(false);
+                setManagingSub(null);
+                navigation.navigate('Wallet');
+              },
+            },
+          ]
+        );
+        return;
+      }
     }
 
-    setSubscriptions(
-      subscriptions.map((s: any) =>
-        s.id === subId
-          ? {
-              ...s,
-              is_paused: true,
-              status: 'PAUSED',
-              paused_dates: s.paused_dates ? [...s.paused_dates, skipDate] : [skipDate],
-            }
-          : s
-      )
-    );
-
-    Alert.alert(
-      'Meal Delivery Paused ⏸️',
-      `Your meal delivery for ${skipDate} has been paused. It is flagged live on the Admin portal.`
-    );
+    setSelectedDailyMenu((prev: any) => ({
+      ...prev,
+      [dateKey]: {
+        id: dish.id,
+        name: dish.name || dish.title,
+        price: dishPrice,
+        extraCharge,
+      },
+    }));
+    setSelectingForDateKey(null);
   };
+
+  const handleSaveDailyMenuToFirestore = async () => {
+    if (!customizingSub) return;
+    try {
+      const { doc, updateDoc } = require('firebase/firestore');
+      const { firestore } = require('../firebaseConfig');
+      await updateDoc(doc(firestore, 'subscriptions', customizingSub.id), {
+        daily_menu: selectedDailyMenu,
+        updated_at: new Date().toISOString(),
+      });
+
+      Alert.alert('Menu Saved 🍱', 'Your custom daily meal schedule has been saved successfully!');
+      setShowMenuCustomizer(false);
+    } catch (e: any) {
+      Alert.alert('Error', e.message);
+    }
+  };
+
+  // Days of week (Mon-Sun) helper for weekly progress tracker
+  const weekDays = useMemo(() => {
+    const curr = dayjs();
+    const monday = curr.startOf('week').add(1, 'day'); // Mon
+    const days = [];
+    const labels = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+    for (let i = 0; i < 7; i++) {
+      const d = monday.add(i, 'day');
+      days.push({
+        label: labels[i],
+        dateStr: d.format('YYYY-MM-DD'),
+      });
+    }
+    return days;
+  }, []);
+
+  // Current month calendar days generator
+  const currentMonthDays = useMemo(() => {
+    const startOfMonth = dayjs().startOf('month');
+    const totalDays = startOfMonth.daysInMonth();
+    const days = [];
+    for (let i = 1; i <= totalDays; i++) {
+      const d = startOfMonth.date(i);
+      days.push({
+        dayNum: i,
+        dateStr: d.format('YYYY-MM-DD'),
+      });
+    }
+    return days;
+  }, []);
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
-      <ScrollView contentContainerStyle={styles.container}>
-        <Text style={[styles.pageTitle, { color: theme.textPrimary }]}>Tiffin Packs & Subscriptions 🍱</Text>
+      <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
+        <Text style={[styles.pageTitle, { color: theme.textPrimary }]}>
+          Tiffin Subscriptions 🍱
+        </Text>
 
-        {/* Active Subscriptions List */}
-        <Text style={[styles.sectionTitle, { color: theme.textPrimary }]}>Active Subscriptions</Text>
-        {subscriptions && subscriptions.length > 0 ? (
-          subscriptions.map((sub: any) => (
-            <View
-              key={sub.id}
+        {/* Top Tabs: Active vs Past */}
+        <View style={styles.tabBar}>
+          <TouchableOpacity
+            style={[
+              styles.tabButton,
+              activeTab === 'active' && [styles.tabButtonActive, { backgroundColor: theme.primary }],
+            ]}
+            onPress={() => setActiveTab('active')}
+          >
+            <Text
               style={[
-                styles.activeCard,
-                { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
+                styles.tabButtonText,
+                { color: activeTab === 'active' ? '#FFFFFF' : theme.textSecondary },
               ]}
             >
-              <View style={styles.activeHeaderRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.activeTitle, { color: theme.textPrimary }]}>{sub.plan_type}</Text>
-                  <Text style={[styles.activeDate, { color: theme.textSecondary }]}>
-                    Valid until {dayjs(sub.end_date).format('MMM DD, YYYY')}
-                  </Text>
-                </View>
-                <View style={[styles.mealsBadge, { backgroundColor: theme.primary }]}>
-                  <Text style={styles.mealsBadgeCount}>{sub.meals_remaining}</Text>
-                  <Text style={styles.mealsBadgeLabel}>Meals Left</Text>
-                </View>
-              </View>
+              Active ({activeSubs.length})
+            </Text>
+          </TouchableOpacity>
 
-              <View style={[styles.divider, { backgroundColor: theme.surfaceBorder }]} />
-
-              <Text style={[styles.pauseHeading, { color: theme.textPrimary }]}>Pause / Skip Specific Day's Meal</Text>
-              <Text style={[styles.pauseSub, { color: theme.textSecondary }]}>
-                Free up a slot count without losing a meal balance.
-              </Text>
-              <View style={styles.pauseRow}>
-                <TextInput
-                  style={[
-                    styles.dateInput,
-                    {
-                      backgroundColor: theme.inputBg,
-                      borderColor: theme.inputBorder,
-                      color: theme.inputText,
-                    },
-                  ]}
-                  value={skipDate}
-                  onChangeText={setSkipDate}
-                  placeholder="YYYY-MM-DD"
-                  placeholderTextColor={theme.textMuted}
-                />
-                <TouchableOpacity
-                  style={[styles.pauseButton, { backgroundColor: theme.primary }]}
-                  onPress={() => handlePause(sub.id)}
-                >
-                  <Text style={[styles.pauseButtonText, { color: theme.buttonText }]}>Skip Meal ⏸️</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          ))
-        ) : (
-          <View
+          <TouchableOpacity
             style={[
-              styles.noSubBox,
-              { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
+              styles.tabButton,
+              activeTab === 'past' && [styles.tabButtonActive, { backgroundColor: theme.primary }],
             ]}
+            onPress={() => setActiveTab('past')}
           >
-            <Text style={[styles.noSubText, { color: theme.textPrimary }]}>No active subscription pack found.</Text>
-            <Text style={[styles.noSubHint, { color: theme.textSecondary }]}>Choose a plan below to get started 👇</Text>
+            <Text
+              style={[
+                styles.tabButtonText,
+                { color: activeTab === 'past' ? '#FFFFFF' : theme.textSecondary },
+              ]}
+            >
+              Past / Expired ({expiredSubs.length})
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* TAB 1: ACTIVE SUBSCRIPTIONS */}
+        {activeTab === 'active' && (
+          <View style={styles.sectionWrap}>
+            {activeSubs.length > 0 ? (
+              activeSubs.map((sub: any) => {
+                const isPaused = sub.is_paused || sub.status === 'PAUSED';
+                const pausedDates = sub.paused_dates || [];
+
+                return (
+                  <View
+                    key={sub.id}
+                    style={[
+                      styles.activeCard,
+                      { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
+                    ]}
+                  >
+                    {/* Header Row */}
+                    <View style={styles.activeHeaderRow}>
+                      <View style={{ flex: 1 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Text style={[styles.activeTitle, { color: theme.textPrimary }]}>
+                            {sub.plan_type || sub.plan_title}
+                          </Text>
+                          <View
+                            style={[
+                              styles.statusTag,
+                              { backgroundColor: isPaused ? '#FEF3C7' : '#DCFCE7' },
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.statusTagText,
+                                { color: isPaused ? '#D97706' : '#15803D' },
+                              ]}
+                            >
+                              {isPaused ? 'PAUSED' : 'ACTIVE'}
+                            </Text>
+                          </View>
+                        </View>
+                        <Text style={[styles.activeDate, { color: theme.textSecondary }]}>
+                          Valid until {dayjs(sub.end_date).format('MMM DD, YYYY')}
+                        </Text>
+                      </View>
+
+                      <View style={[styles.mealsBadge, { backgroundColor: theme.primary }]}>
+                        <Text style={styles.mealsBadgeCount}>{sub.meals_remaining ?? 0}</Text>
+                        <Text style={styles.mealsBadgeLabel}>Meals Left</Text>
+                      </View>
+                    </View>
+
+                    {/* Weekly Progress Tracker (M T W T F S S) */}
+                    <View style={styles.weekTrackerRow}>
+                      {weekDays.map(wd => {
+                        const isSkipped = pausedDates.includes(wd.dateStr) || isPaused;
+                        return (
+                          <View key={wd.dateStr} style={styles.weekDayCol}>
+                            <View
+                              style={[
+                                styles.weekDayDot,
+                                {
+                                  backgroundColor: isSkipped
+                                    ? '#F59E0B'
+                                    : isDark
+                                    ? '#15803D'
+                                    : '#22C55E',
+                                },
+                              ]}
+                            >
+                              <Text style={styles.weekDayDotText}>{isSkipped ? '⏸' : '✓'}</Text>
+                            </View>
+                            <Text style={[styles.weekDayLabel, { color: theme.textMuted }]}>
+                              {wd.label}
+                            </Text>
+                          </View>
+                        );
+                      })}
+                    </View>
+
+                    {/* Action Buttons: Pause Plan & Manage */}
+                    <View style={styles.activeActionsRow}>
+                      <TouchableOpacity
+                        style={[
+                          styles.actionBtnOutline,
+                          {
+                            borderColor: isPaused ? '#10B981' : '#F59E0B',
+                            backgroundColor: isPaused ? '#ECFDF5' : '#FFFBEB',
+                          },
+                        ]}
+                        onPress={() => handleTogglePause(sub)}
+                      >
+                        <Text
+                          style={[
+                            styles.actionBtnOutlineText,
+                            { color: isPaused ? '#059669' : '#D97706' },
+                          ]}
+                        >
+                          {isPaused ? 'Resume Plan ▶️' : 'Pause Plan ⏸️'}
+                        </Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={[styles.actionBtnPrimary, { backgroundColor: theme.primary }]}
+                        onPress={() => setManagingSub(sub)}
+                      >
+                        <Text style={[styles.actionBtnPrimaryText, { color: theme.buttonText }]}>
+                          Manage Plan ⚙️
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                );
+              })
+            ) : (
+              <View
+                style={[
+                  styles.emptyCard,
+                  { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
+                ]}
+              >
+                <Text style={{ fontSize: 32, marginBottom: 8 }}>🍱</Text>
+                <Text style={[styles.emptyTitle, { color: theme.textPrimary }]}>
+                  No Active Subscriptions
+                </Text>
+                <Text style={[styles.emptySub, { color: theme.textSecondary }]}>
+                  Choose a weekly or monthly tiffin pack below to enjoy fresh, auto-dispatched meals daily!
+                </Text>
+              </View>
+            )}
           </View>
         )}
 
-        {/* Buy New Subscription Pack */}
-        <Text style={[styles.sectionTitle, { color: theme.textPrimary, marginTop: 24 }]}>Buy New Meal Pack</Text>
-        <Text style={[styles.planNote, { color: theme.textMuted }]}>
-          ℹ️ Pricing managed by admin portal. Shown prices are indicative.
+        {/* TAB 2: PAST / EXPIRED SUBSCRIPTIONS */}
+        {activeTab === 'past' && (
+          <View style={styles.sectionWrap}>
+            {expiredSubs.length > 0 ? (
+              expiredSubs.map((sub: any) => (
+                <View
+                  key={sub.id}
+                  style={[
+                    styles.expiredCard,
+                    { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
+                  ]}
+                >
+                  <View style={styles.activeHeaderRow}>
+                    <View style={{ flex: 1 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Text style={[styles.activeTitle, { color: theme.textSecondary }]}>
+                          {sub.plan_type || sub.plan_title}
+                        </Text>
+                        <View style={styles.expiredTag}>
+                          <Text style={styles.expiredTagText}>EXPIRED</Text>
+                        </View>
+                      </View>
+                      <Text style={[styles.activeDate, { color: theme.textMuted }]}>
+                        Expired on {dayjs(sub.end_date).format('MMM DD, YYYY')}
+                      </Text>
+                    </View>
+
+                    <View style={styles.expiredMealsBadge}>
+                      <Text style={styles.expiredMealsCount}>{sub.meals_remaining ?? 0}</Text>
+                      <Text style={styles.expiredMealsLabel}>Meals Left</Text>
+                    </View>
+                  </View>
+
+                  <View style={[styles.divider, { backgroundColor: theme.surfaceBorder }]} />
+
+                  <View style={styles.expiredFooterRow}>
+                    <Text style={[styles.expiredDisabledNote, { color: theme.textMuted }]}>
+                      🔒 This subscription plan has expired and can no longer be used.
+                    </Text>
+                    <TouchableOpacity
+                      style={[styles.resubscribeBtn, { backgroundColor: theme.primary }]}
+                      onPress={() => {
+                        setActiveTab('active');
+                        Alert.alert('Re-subscribe', 'Select a plan below to renew your daily tiffins!');
+                      }}
+                    >
+                      <Text style={[styles.resubscribeBtnText, { color: theme.buttonText }]}>
+                        Re-Subscribe ↺
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ))
+            ) : (
+              <View
+                style={[
+                  styles.emptyCard,
+                  { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
+                ]}
+              >
+                <Text style={{ fontSize: 32, marginBottom: 8 }}>✨</Text>
+                <Text style={[styles.emptyTitle, { color: theme.textPrimary }]}>
+                  No Expired Subscriptions
+                </Text>
+                <Text style={[styles.emptySub, { color: theme.textSecondary }]}>
+                  All your active and past subscriptions will appear here cleanly.
+                </Text>
+              </View>
+            )}
+          </View>
+        )}
+
+        {/* Buy New Meal Pack Section */}
+        <Text style={[styles.sectionTitle, { color: theme.textPrimary, marginTop: 24 }]}>
+          Buy New Meal Pack
+        </Text>
+        <Text style={[styles.sectionSub, { color: theme.textSecondary }]}>
+          ℹ️ Select a meal plan and customize your day-wise schedule before checkout.
         </Text>
 
         {availablePlans.map((plan: any) => {
-          const isSelected = selectedPlan && selectedPlan.id === plan.id;
-          const walletCredit = plan.wallet_credit || PLAN_WALLET_CREDITS[plan.id] || plan.price || 0;
-          const saving = walletCredit > plan.price ? walletCredit - plan.price : 0;
+          const isSelected = selectedPlan?.id === plan.id;
           return (
             <TouchableOpacity
               key={plan.id}
               style={[
                 styles.planCard,
                 {
-                  backgroundColor: isSelected ? theme.primaryLight : theme.surface,
+                  backgroundColor: theme.surface,
                   borderColor: isSelected ? theme.primary : theme.surfaceBorder,
+                  borderWidth: isSelected ? 2 : 1,
                 },
               ]}
               onPress={() => setSelectedPlan(plan)}
+              activeOpacity={0.8}
             >
-              <View style={styles.planHeader}>
+              <View style={styles.planHeaderRow}>
                 <View style={{ flex: 1 }}>
-                  <Text style={[styles.planTitle, { color: theme.textPrimary }]}>{plan.title}</Text>
-                  <Text style={[styles.planDesc, { color: theme.textSecondary }]}>{plan.description || plan.desc}</Text>
-                </View>
-                {plan.tag ? (
-                  <View
-                    style={[
-                      styles.tagBadge,
-                      { backgroundColor: theme.accentBadgeBg },
-                      plan.category === 'Combo' && { backgroundColor: theme.primaryLight },
-                    ]}
-                  >
-                    <Text style={[styles.tagText, { color: theme.accent }]}>{plan.tag}</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text style={[styles.planTitle, { color: theme.textPrimary }]}>{plan.title}</Text>
+                    {plan.tag ? (
+                      <View style={[styles.tagBadge, { backgroundColor: theme.primary + '18' }]}>
+                        <Text style={[styles.tagBadgeText, { color: theme.primary }]}>{plan.tag}</Text>
+                      </View>
+                    ) : null}
                   </View>
-                ) : null}
-              </View>
-
-              {/* Wallet Credit Banner */}
-              <View
-                style={[
-                  styles.walletCreditBanner,
-                  { backgroundColor: theme.statusSuccessBg, borderColor: theme.statusSuccessText },
-                ]}
-              >
-                <Text style={styles.walletCreditIcon}>💳</Text>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.walletCreditLabel, { color: theme.statusSuccessText }]}>
-                    WALLET CREDIT ON PURCHASE
-                  </Text>
-                  <Text style={[styles.walletCreditAmount, { color: theme.statusSuccessText }]}>
-                    ₹{walletCredit.toLocaleString('en-IN')}
-                    <Text style={styles.walletCreditSaving}>
-                      {saving > 0 ? `  +₹${saving.toLocaleString('en-IN')} bonus` : ''}
-                    </Text>
+                  <Text style={[styles.planDesc, { color: theme.textSecondary }]}>{plan.desc}</Text>
+                </View>
+                <View style={{ alignItems: 'flex-end' }}>
+                  <Text style={[styles.planPrice, { color: theme.textPrimary }]}>₹{plan.price}</Text>
+                  <Text style={[styles.planDuration, { color: theme.textSecondary }]}>
+                    /{plan.duration}
                   </Text>
                 </View>
               </View>
 
-              <View style={styles.planPriceRow}>
-                <Text style={[styles.planDuration, { color: theme.textSecondary }]}>
-                  📅 {plan.duration} • {plan.meals} meals
-                </Text>
-                <Text style={[styles.planPrice, { color: theme.primary }]}>
-                  ₹{Number(plan.price || 0).toLocaleString('en-IN')}
+              {/* Wallet Bonus Callout */}
+              <View style={[styles.bonusBar, { backgroundColor: isDark ? '#1E293B' : '#FFF7ED' }]}>
+                <Text style={[styles.bonusBarText, { color: isDark ? '#F97316' : '#C2410C' }]}>
+                  🎁 Wallet Credit Included: ₹
+                  {(
+                    plan.wallet_credit ||
+                    PLAN_WALLET_CREDITS[plan.id] ||
+                    plan.price
+                  ).toLocaleString('en-IN')}
                 </Text>
               </View>
             </TouchableOpacity>
           );
         })}
 
-        {/* Auto Renew Switch */}
-        <View style={styles.switchRow}>
-          <Text style={[styles.switchLabel, { color: theme.textPrimary }]}>Auto-renew plan when meals run out</Text>
-          <Switch
-            value={autoRenew}
-            onValueChange={setAutoRenew}
-            trackColor={{ false: theme.inputBorder, true: '#FFAB91' }}
-            thumbColor={autoRenew ? theme.primary : theme.inputBg}
-          />
-        </View>
-
+        {/* Subscribe Action Button */}
         <TouchableOpacity
-          style={[styles.buyButton, { backgroundColor: theme.primary }]}
+          style={[styles.subscribeBtn, { backgroundColor: theme.primary }]}
           onPress={handleSubscribe}
           disabled={loading}
         >
-          <Text style={[styles.buyButtonText, { color: theme.buttonText }]}>
-            {loading
-              ? 'Activating Plan...'
-              : `📱 Pay ₹${selectedPlan.price.toLocaleString('en-IN')} via Direct UPI`}
+          <Text style={[styles.subscribeBtnText, { color: theme.buttonText }]}>
+            {loading ? 'Processing...' : `Subscribe to ${selectedPlan?.title || 'Plan'} ➔`}
           </Text>
-          {!loading && (
-            <Text style={styles.buyButtonSub}>
-              0% Fee • Instant 1-Tap GPay / PhonePe / Paytm Payment
-            </Text>
-          )}
         </TouchableOpacity>
       </ScrollView>
 
-      {/* Zero-fee Direct UPI & QR Code Modal */}
+      {/* MODAL 1: MANAGE PLAN (Step 2 in Reference Flow) */}
+      {managingSub ? (
+        <Modal
+          visible={true}
+          animationType="slide"
+          transparent={false}
+          onRequestClose={handleCloseManageModal}
+        >
+          <SafeAreaView style={[styles.modalSafeArea, { backgroundColor: theme.background }]}>
+            <View style={styles.modalHeader}>
+              <TouchableOpacity onPress={handleCloseManageModal} style={styles.modalBackBtn}>
+                <Text style={[styles.modalBackText, { color: theme.textPrimary }]}>← Back</Text>
+              </TouchableOpacity>
+              <Text style={[styles.modalTitle, { color: theme.textPrimary }]}>
+                Manage {managingSub.plan_type}
+              </Text>
+              <View style={{ width: 40 }} />
+            </View>
+
+            <ScrollView contentContainerStyle={styles.modalScroll}>
+              {/* Plan Summary Card */}
+              <View
+                style={[
+                  styles.manageHeroCard,
+                  { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
+                ]}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                  <Image
+                    source={require('../../assets/icon_tiffin_box.jpg')}
+                    style={styles.heroThumbnail}
+                  />
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.heroPlanTitle, { color: theme.textPrimary }]}>
+                      {managingSub.plan_type}
+                    </Text>
+                    <Text style={[styles.heroPlanPrice, { color: theme.primary }]}>
+                      ₹{managingSub.price || 899}/week
+                    </Text>
+                    <Text style={[styles.heroPlanValid, { color: theme.textSecondary }]}>
+                      Valid till {dayjs(managingSub.end_date).format('DD MMM YYYY')}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* 3 Metric Stats (Meals Left, Days Passed, Cost Per Meal) */}
+                <View style={styles.statsRow}>
+                  <View style={styles.statCol}>
+                    <Text style={[styles.statValue, { color: theme.primary }]}>
+                      {managingSub.meals_remaining ?? 0}
+                    </Text>
+                    <Text style={[styles.statLabel, { color: theme.textSecondary }]}>Meals Left</Text>
+                  </View>
+                  <View style={styles.statDivider} />
+                  <View style={styles.statCol}>
+                    <Text style={[styles.statValue, { color: theme.textPrimary }]}>
+                      {managingSub.created_at
+                        ? Math.max(0, dayjs().diff(dayjs(managingSub.created_at), 'day'))
+                        : 0}
+                    </Text>
+                    <Text style={[styles.statLabel, { color: theme.textSecondary }]}>Days Passed</Text>
+                  </View>
+                  <View style={styles.statDivider} />
+                  <View style={styles.statCol}>
+                    <Text style={[styles.statValue, { color: theme.textPrimary }]}>
+                      ₹{Math.round((managingSub.price || 899) / (managingSub.meals_total || 7))}
+                    </Text>
+                    <Text style={[styles.statLabel, { color: theme.textSecondary }]}>Per Meal</Text>
+                  </View>
+                </View>
+              </View>
+
+              {/* Quick Actions List */}
+              <Text style={[styles.actionSectionHeader, { color: theme.textPrimary }]}>
+                Quick Actions
+              </Text>
+
+              {/* Pause / Resume */}
+              <TouchableOpacity
+                style={[
+                  styles.quickActionItem,
+                  { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
+                ]}
+                onPress={() => handleTogglePause(managingSub)}
+              >
+                <Text style={styles.quickActionIcon}>
+                  {managingSub.is_paused || managingSub.status === 'PAUSED' ? '▶️' : '⏸️'}
+                </Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.quickActionTitle, { color: theme.textPrimary }]}>
+                    {managingSub.is_paused || managingSub.status === 'PAUSED'
+                      ? 'Resume Plan'
+                      : 'Pause Plan'}
+                  </Text>
+                  <Text style={[styles.quickActionSub, { color: theme.textSecondary }]}>
+                    {managingSub.is_paused || managingSub.status === 'PAUSED'
+                      ? 'Restart your deliveries anytime'
+                      : 'Temporarily stop deliveries'}
+                  </Text>
+                </View>
+                <Text style={[styles.quickActionArrow, { color: theme.textMuted }]}>›</Text>
+              </TouchableOpacity>
+
+              {/* Skip Specific Dates */}
+              <TouchableOpacity
+                style={[
+                  styles.quickActionItem,
+                  { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
+                ]}
+                onPress={() => openSkipModalForSub(managingSub)}
+              >
+                <Text style={styles.quickActionIcon}>📅</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.quickActionTitle, { color: theme.textPrimary }]}>
+                    Skip Specific Dates
+                  </Text>
+                  <Text style={[styles.quickActionSub, { color: theme.textSecondary }]}>
+                    Skip single or multiple delivery days easily
+                  </Text>
+                </View>
+                <Text style={[styles.quickActionArrow, { color: theme.textMuted }]}>›</Text>
+              </TouchableOpacity>
+
+              {/* Customize Day-Wise Menu */}
+              <TouchableOpacity
+                style={[
+                  styles.quickActionItem,
+                  { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
+                ]}
+                onPress={() => openMenuCustomizer(managingSub)}
+              >
+                <Text style={styles.quickActionIcon}>🍲</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.quickActionTitle, { color: theme.textPrimary }]}>
+                    Customize Day-Wise Menu
+                  </Text>
+                  <Text style={[styles.quickActionSub, { color: theme.textSecondary }]}>
+                    Select dishes from menu with your wallet credit
+                  </Text>
+                </View>
+                <Text style={[styles.quickActionArrow, { color: theme.textMuted }]}>›</Text>
+              </TouchableOpacity>
+
+              {/* Delivery Calendar (Step 5 in mockup) */}
+              <Text style={[styles.actionSectionHeader, { color: theme.textPrimary, marginTop: 20 }]}>
+                Delivery Calendar — {dayjs().format('MMMM YYYY')}
+              </Text>
+              <View
+                style={[
+                  styles.calendarCard,
+                  { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
+                ]}
+              >
+                <View style={styles.calendarLegendRow}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                    <View style={[styles.legendDot, { backgroundColor: '#22C55E' }]} />
+                    <Text style={[styles.legendText, { color: theme.textSecondary }]}>Scheduled</Text>
+                  </View>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                    <View style={[styles.legendDot, { backgroundColor: '#F97316' }]} />
+                    <Text style={[styles.legendText, { color: theme.textSecondary }]}>Skipped</Text>
+                  </View>
+                </View>
+
+                {/* Days Grid */}
+                <View style={styles.calendarGrid}>
+                  {currentMonthDays.map(item => {
+                    const isSkipped = (managingSub.paused_dates || []).includes(item.dateStr);
+                    const isWithin =
+                      (!managingSub.start_date || item.dateStr >= managingSub.start_date.split('T')[0]) &&
+                      (!managingSub.end_date || item.dateStr <= managingSub.end_date.split('T')[0]);
+
+                    return (
+                      <View
+                        key={item.dateStr}
+                        style={[
+                          styles.calDayBox,
+                          isSkipped && styles.calDayBoxSkipped,
+                          isWithin && !isSkipped && styles.calDayBoxScheduled,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.calDayNum,
+                            {
+                              color: isSkipped
+                                ? '#FFFFFF'
+                                : isWithin
+                                ? '#FFFFFF'
+                                : theme.textMuted,
+                            },
+                          ]}
+                        >
+                          {item.dayNum}
+                        </Text>
+                      </View>
+                    );
+                  })}
+                </View>
+
+                {/* Skipped Dates Pills */}
+                {managingSub.paused_dates && managingSub.paused_dates.length > 0 ? (
+                  <View style={styles.skippedSummaryBanner}>
+                    <Text style={styles.skippedSummaryText}>
+                      ⏸️ {managingSub.paused_dates.length} meal(s) skipped •{' '}
+                      {managingSub.paused_dates.slice(0, 3).join(', ')}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+            </ScrollView>
+          </SafeAreaView>
+        </Modal>
+      ) : null}
+
+      {/* MODAL 2: SKIP SPECIFIC DAYS (Step 3 & Step 4 Confirmation) */}
+      {showSkipModal ? (
+        <Modal
+          visible={true}
+          animationType="slide"
+          transparent={false}
+          onRequestClose={() => {
+            if (skipStep === 'confirm') setSkipStep('picker');
+            else setShowSkipModal(false);
+          }}
+        >
+          <SafeAreaView style={[styles.modalSafeArea, { backgroundColor: theme.background }]}>
+            <View style={styles.modalHeader}>
+              <TouchableOpacity
+                onPress={() => {
+                  if (skipStep === 'confirm') setSkipStep('picker');
+                  else setShowSkipModal(false);
+                }}
+                style={styles.modalBackBtn}
+              >
+                <Text style={[styles.modalBackText, { color: theme.textPrimary }]}>← Back</Text>
+              </TouchableOpacity>
+              <Text style={[styles.modalTitle, { color: theme.textPrimary }]}>
+                {skipStep === 'confirm' ? 'Confirm Skip' : 'Skip Specific Days'}
+              </Text>
+              <View style={{ width: 40 }} />
+            </View>
+
+            <ScrollView contentContainerStyle={styles.modalScroll}>
+              {skipStep === 'picker' ? (
+                <>
+                  {/* Quick Chips */}
+                  <View style={styles.chipsRow}>
+                    <TouchableOpacity
+                      style={styles.chipBtn}
+                      onPress={() => {
+                        const tomorrow = dayjs().add(1, 'day').format('YYYY-MM-DD');
+                        setSelectedSkipDates([tomorrow]);
+                      }}
+                    >
+                      <Text style={styles.chipBtnText}>Tomorrow</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.chipBtn}
+                      onPress={() => {
+                        const next3 = [
+                          dayjs().add(1, 'day').format('YYYY-MM-DD'),
+                          dayjs().add(2, 'day').format('YYYY-MM-DD'),
+                          dayjs().add(3, 'day').format('YYYY-MM-DD'),
+                        ];
+                        setSelectedSkipDates(next3);
+                      }}
+                    >
+                      <Text style={styles.chipBtnText}>Next 3 Days</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Multi-date Calendar Grid */}
+                  <View
+                    style={[
+                      styles.calendarCard,
+                      { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
+                    ]}
+                  >
+                    <Text style={[styles.actionSectionHeader, { color: theme.textPrimary, marginBottom: 8 }]}>
+                      Tap dates to skip:
+                    </Text>
+                    <View style={styles.calendarGrid}>
+                      {currentMonthDays.map(item => {
+                        const isSelected = selectedSkipDates.includes(item.dateStr);
+                        return (
+                          <TouchableOpacity
+                            key={item.dateStr}
+                            style={[
+                              styles.calDayBoxInteractive,
+                              isSelected && styles.calDayBoxSelected,
+                            ]}
+                            onPress={() => {
+                              if (isSelected) {
+                                setSelectedSkipDates(selectedSkipDates.filter(d => d !== item.dateStr));
+                              } else {
+                                setSelectedSkipDates([...selectedSkipDates, item.dateStr].sort());
+                              }
+                            }}
+                          >
+                            <Text
+                              style={[
+                                styles.calDayNum,
+                                { color: isSelected ? '#FFFFFF' : theme.textPrimary },
+                              ]}
+                            >
+                              {item.dayNum}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </View>
+
+                  {/* Reason Input */}
+                  <Text style={[styles.actionSectionHeader, { color: theme.textPrimary, marginTop: 16 }]}>
+                    Reason (Optional)
+                  </Text>
+                  <TextInput
+                    style={[
+                      styles.reasonInput,
+                      {
+                        backgroundColor: theme.inputBg,
+                        borderColor: theme.inputBorder,
+                        color: theme.inputText,
+                      },
+                    ]}
+                    value={skipReason}
+                    onChangeText={setSkipReason}
+                    placeholder="e.g. Not at home, Travelling, Fasting"
+                    placeholderTextColor={theme.textMuted}
+                  />
+
+                  {/* Bottom Action Button */}
+                  <TouchableOpacity
+                    style={[
+                      styles.subscribeBtn,
+                      {
+                        backgroundColor:
+                          selectedSkipDates.length > 0 ? theme.primary : theme.surfaceBorder,
+                        marginTop: 24,
+                      },
+                    ]}
+                    disabled={selectedSkipDates.length === 0}
+                    onPress={() => setSkipStep('confirm')}
+                  >
+                    <Text style={[styles.subscribeBtnText, { color: theme.buttonText }]}>
+                      Skip {selectedSkipDates.length} Days ➔
+                    </Text>
+                  </TouchableOpacity>
+                </>
+              ) : (
+                /* Step 4: Confirmation Screen */
+                <>
+                  <View style={styles.confirmCallout}>
+                    <Text style={styles.confirmCalloutTitle}>
+                      ⚠️ You are about to skip {selectedSkipDates.length} meal(s)
+                    </Text>
+                    <Text style={styles.confirmCalloutText}>
+                      These dates will not be included in your delivery and will be safely preserved
+                      in your meal count balance.
+                    </Text>
+                  </View>
+
+                  <View
+                    style={[
+                      styles.confirmBox,
+                      { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
+                    ]}
+                  >
+                    <Text style={[styles.confirmSectionTitle, { color: theme.textPrimary }]}>
+                      Selected Dates:
+                    </Text>
+                    <Text style={[styles.confirmDatesList, { color: theme.primary }]}>
+                      {selectedSkipDates.join(', ')}
+                    </Text>
+
+                    <View style={[styles.divider, { backgroundColor: theme.surfaceBorder }]} />
+
+                    <View style={styles.confirmRow}>
+                      <Text style={[styles.confirmLabel, { color: theme.textSecondary }]}>
+                        Current Meals Left:
+                      </Text>
+                      <Text style={[styles.confirmVal, { color: theme.textPrimary }]}>
+                        {managingSub.meals_remaining ?? 0}
+                      </Text>
+                    </View>
+
+                    <View style={styles.confirmRow}>
+                      <Text style={[styles.confirmLabel, { color: theme.textSecondary }]}>
+                        Meals to be Skipped:
+                      </Text>
+                      <Text style={[styles.confirmVal, { color: '#F97316' }]}>
+                        {selectedSkipDates.length}
+                      </Text>
+                    </View>
+
+                    <View style={styles.confirmRow}>
+                      <Text style={[styles.confirmLabel, { color: theme.textSecondary }]}>
+                        Preserved Balance:
+                      </Text>
+                      <Text style={[styles.confirmVal, { color: '#10B981' }]}>
+                        {managingSub.meals_remaining ?? 0} meals saved
+                      </Text>
+                    </View>
+
+                    <View style={[styles.divider, { backgroundColor: theme.surfaceBorder }]} />
+
+                    <View style={styles.confirmRow}>
+                      <Text style={[styles.confirmLabel, { color: theme.textSecondary }]}>Reason:</Text>
+                      <Text style={[styles.confirmVal, { color: theme.textPrimary }]}>
+                        {skipReason}
+                      </Text>
+                    </View>
+                  </View>
+
+                  <TouchableOpacity
+                    style={[styles.subscribeBtn, { backgroundColor: theme.primary, marginTop: 24 }]}
+                    onPress={handleConfirmSkipDates}
+                  >
+                    <Text style={[styles.subscribeBtnText, { color: theme.buttonText }]}>
+                      Confirm Skip
+                    </Text>
+                  </TouchableOpacity>
+                </>
+              )}
+            </ScrollView>
+          </SafeAreaView>
+        </Modal>
+      ) : null}
+
+      {/* MODAL 3: DAY-WISE MENU CUSTOMIZATION WITH WALLET BUDGET CHECK */}
+      {showMenuCustomizer ? (
+        <Modal
+          visible={true}
+          animationType="slide"
+          transparent={false}
+          onRequestClose={() => setShowMenuCustomizer(false)}
+        >
+          <SafeAreaView style={[styles.modalSafeArea, { backgroundColor: theme.background }]}>
+            <View style={styles.modalHeader}>
+              <TouchableOpacity
+                onPress={() => setShowMenuCustomizer(false)}
+                style={styles.modalBackBtn}
+              >
+                <Text style={[styles.modalBackText, { color: theme.textPrimary }]}>← Back</Text>
+              </TouchableOpacity>
+              <Text style={[styles.modalTitle, { color: theme.textPrimary }]}>
+                Day-Wise Menu Plan
+              </Text>
+              <View style={{ width: 40 }} />
+            </View>
+
+            <ScrollView contentContainerStyle={styles.modalScroll}>
+              {/* Wallet Info Badge */}
+              <View
+                style={[
+                  styles.walletAllowanceCard,
+                  { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
+                ]}
+              >
+                <Text style={[styles.walletAllowanceTitle, { color: theme.textPrimary }]}>
+                  👛 AFoodoo Wallet Balance: ₹{user?.wallet_balance ?? 0}
+                </Text>
+                <Text style={[styles.walletAllowanceSub, { color: theme.textSecondary }]}>
+                  Standard daily dishes (up to ₹128) are 100% included in your plan. Any premium dishes
+                  will deduct only the small difference from your wallet.
+                </Text>
+              </View>
+
+              <Text style={[styles.actionSectionHeader, { color: theme.textPrimary, marginTop: 16 }]}>
+                Select Dish for Each Scheduled Day
+              </Text>
+
+              {/* 7 Days List */}
+              {weekDays.map(wd => {
+                const dayDish = selectedDailyMenu[wd.dateStr];
+                return (
+                  <View
+                    key={wd.dateStr}
+                    style={[
+                      styles.dayMenuRow,
+                      { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
+                    ]}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.dayMenuDate, { color: theme.primary }]}>
+                        {dayjs(wd.dateStr).format('dddd, MMM DD')}
+                      </Text>
+                      <Text style={[styles.dayMenuDish, { color: theme.textPrimary }]}>
+                        {dayDish?.name || "Standard Chef's Special Thali"}
+                      </Text>
+                      {dayDish?.extraCharge > 0 ? (
+                        <Text style={styles.extraChargeText}>
+                          +₹{dayDish.extraCharge} extra from wallet
+                        </Text>
+                      ) : null}
+                    </View>
+
+                    <TouchableOpacity
+                      style={[styles.selectDishBtn, { backgroundColor: theme.primary + '20' }]}
+                      onPress={() => setSelectingForDateKey(wd.dateStr)}
+                    >
+                      <Text style={[styles.selectDishBtnText, { color: theme.primary }]}>
+                        {dayDish ? 'Change' : 'Select'} Dish
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                );
+              })}
+
+              {/* Save Button */}
+              <TouchableOpacity
+                style={[styles.subscribeBtn, { backgroundColor: theme.primary, marginTop: 24 }]}
+                onPress={handleSaveDailyMenuToFirestore}
+              >
+                <Text style={[styles.subscribeBtnText, { color: theme.buttonText }]}>
+                  Save Menu Schedule 💾
+                </Text>
+              </TouchableOpacity>
+            </ScrollView>
+
+            {/* Sub-modal: Pick Dish from live menu */}
+            {selectingForDateKey ? (
+              <Modal
+                visible={true}
+                animationType="slide"
+                transparent={true}
+                onRequestClose={() => setSelectingForDateKey(null)}
+              >
+                <View style={styles.dishPickerOverlay}>
+                  <View
+                    style={[
+                      styles.dishPickerCard,
+                      { backgroundColor: theme.background, borderColor: theme.surfaceBorder },
+                    ]}
+                  >
+                    <View style={styles.modalHeader}>
+                      <Text style={[styles.modalTitle, { color: theme.textPrimary }]}>
+                        Choose Dish for {dayjs(selectingForDateKey).format('MMM DD')}
+                      </Text>
+                      <TouchableOpacity onPress={() => setSelectingForDateKey(null)}>
+                        <Text style={{ fontSize: 18, color: theme.textMuted }}>✕</Text>
+                      </TouchableOpacity>
+                    </View>
+
+                    <ScrollView style={{ maxHeight: 400 }}>
+                      {menuItems.map(item => (
+                        <TouchableOpacity
+                          key={item.id}
+                          style={[
+                            styles.dishOptionRow,
+                            { borderColor: theme.surfaceBorder, backgroundColor: theme.surface },
+                          ]}
+                          onPress={() => handleSelectMenuItemForDay(item, selectingForDateKey)}
+                        >
+                          <View style={{ flex: 1 }}>
+                            <Text style={[styles.dishOptionName, { color: theme.textPrimary }]}>
+                              {item.name || item.title}
+                            </Text>
+                            <Text style={[styles.dishOptionDesc, { color: theme.textSecondary }]}>
+                              {item.description || 'Fresh daily tiffin item'}
+                            </Text>
+                          </View>
+                          <View style={{ alignItems: 'flex-end' }}>
+                            <Text style={[styles.dishOptionPrice, { color: theme.primary }]}>
+                              ₹{item.price || 120}
+                            </Text>
+                            {item.price > 128 ? (
+                              <Text style={{ fontSize: 10, color: '#F97316' }}>
+                                +₹{item.price - 128} wallet
+                              </Text>
+                            ) : (
+                              <Text style={{ fontSize: 10, color: '#10B981' }}>Included</Text>
+                            )}
+                          </View>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  </View>
+                </View>
+              </Modal>
+            ) : null}
+          </SafeAreaView>
+        </Modal>
+      ) : null}
+
+      {/* UPI Payment Modal */}
       <UpiPaymentModal
         visible={showUpiModal}
-        amount={selectedPlan.price}
+        amount={selectedPlan?.price || 0}
+        onClose={() => setShowUpiModal(false)}
+        onConfirmPaid={handleConfirmSubscription}
+        onConfirm={handleConfirmSubscription}
+        submitting={loading}
+        note={`Subscription - ${selectedPlan?.title || 'Tiffin'}`}
         upiId={upiId}
         merchantName={merchantName}
         customQrUrl={customQrUrl}
-        note={`AFoodoo Plan — ${selectedPlan.title}`}
-        submitting={loading}
-        onClose={() => setShowUpiModal(false)}
-        onConfirmPaid={handleConfirmSubscription}
       />
     </SafeAreaView>
   );
@@ -430,84 +1383,395 @@ export default function SubscriptionScreen({ navigation }: any) {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
-  container: { padding: 20 },
-  pageTitle: { fontSize: 22, fontWeight: '800', marginBottom: 16 },
-  sectionTitle: { fontSize: 16, fontWeight: '700', marginBottom: 12 },
-  planNote: { fontSize: 11, marginBottom: 12, fontStyle: 'italic' },
-  activeCard: {
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 16,
-    borderWidth: 1,
-  },
-  activeHeaderRow: { flexDirection: 'row', alignItems: 'center' },
-  activeTitle: { fontSize: 16, fontWeight: '700' },
-  activeDate: { fontSize: 12, marginTop: 2 },
-  mealsBadge: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10, alignItems: 'center' },
-  mealsBadgeCount: { fontSize: 16, fontWeight: '800', color: '#FFF' },
-  mealsBadgeLabel: { fontSize: 9, color: '#FFE0B2', fontWeight: '700' },
-  divider: { height: 1, marginVertical: 14 },
-  pauseHeading: { fontSize: 13, fontWeight: '700' },
-  pauseSub: { fontSize: 11, marginBottom: 10 },
-  pauseRow: { flexDirection: 'row', alignItems: 'center' },
-  dateInput: {
-    flex: 1,
-    borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    fontSize: 13,
-    marginRight: 10,
-    minHeight: 44,
-  },
-  pauseButton: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 8,
-    minHeight: 44,
-    justifyContent: 'center',
-  },
-  pauseButtonText: { fontSize: 13, fontWeight: '700' },
-  noSubBox: { borderRadius: 12, padding: 20, alignItems: 'center', borderWidth: 1, marginBottom: 8 },
-  noSubText: { fontSize: 14, fontWeight: '700' },
-  noSubHint: { fontSize: 12, marginTop: 4 },
-  planCard: {
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 12,
-    borderWidth: 1.5,
-  },
-  planHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 },
-  planTitle: { fontSize: 16, fontWeight: '700' },
-  planDesc: { fontSize: 12, marginTop: 2 },
-  tagBadge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, marginLeft: 8 },
-  tagText: { fontSize: 10, fontWeight: '700' },
-  planPriceRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 },
-  planDuration: { fontSize: 12 },
-  planPrice: { fontSize: 20, fontWeight: '800' },
-  walletCreditBanner: {
+  container: { padding: 18, paddingBottom: 40 },
+  pageTitle: { fontSize: 22, fontWeight: '900', marginBottom: 16 },
+
+  // Top Tabs
+  tabBar: {
     flexDirection: 'row',
+    backgroundColor: '#00000010',
+    borderRadius: 14,
+    padding: 4,
+    marginBottom: 20,
+  },
+  tabButton: {
+    flex: 1,
+    paddingVertical: 10,
     alignItems: 'center',
     borderRadius: 10,
+  },
+  tabButtonActive: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  tabButtonText: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+
+  sectionWrap: { marginBottom: 16 },
+  sectionTitle: { fontSize: 18, fontWeight: '800', marginBottom: 4 },
+  sectionSub: { fontSize: 12, marginBottom: 14 },
+
+  // Active Plan Card
+  activeCard: {
+    borderRadius: 20,
+    padding: 18,
+    marginBottom: 16,
+    borderWidth: 1.2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.06,
+    shadowRadius: 10,
+    elevation: 3,
+  },
+  activeHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 14,
+  },
+  activeTitle: { fontSize: 18, fontWeight: '900' },
+  activeDate: { fontSize: 12, marginTop: 4, fontWeight: '500' },
+  statusTag: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 },
+  statusTagText: { fontSize: 10, fontWeight: '900' },
+
+  mealsBadge: {
+    alignItems: 'center',
     paddingHorizontal: 12,
     paddingVertical: 8,
-    marginBottom: 8,
-    borderWidth: 1,
+    borderRadius: 14,
+    minWidth: 70,
   },
-  walletCreditIcon: { fontSize: 18, marginRight: 10 },
-  walletCreditLabel: { fontSize: 9, fontWeight: '800', letterSpacing: 0.5 },
-  walletCreditAmount: { fontSize: 16, fontWeight: '800', marginTop: 1 },
-  walletCreditSaving: { fontSize: 11, fontWeight: '700' },
-  switchRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginVertical: 16 },
-  switchLabel: { fontSize: 13, flex: 1, marginRight: 12 },
-  buyButton: {
-    paddingVertical: 15,
+  mealsBadgeCount: { fontSize: 20, fontWeight: '900', color: '#FFF' },
+  mealsBadgeLabel: { fontSize: 9, fontWeight: '800', color: '#FFF', textTransform: 'uppercase' },
+
+  // Weekly Dot Matrix (M T W T F S S)
+  weekTrackerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#0000000A',
+    borderBottomWidth: 1,
+    borderBottomColor: '#0000000A',
+    marginBottom: 14,
+  },
+  weekDayCol: { alignItems: 'center' },
+  weekDayDot: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
+  weekDayDotText: { color: '#FFF', fontSize: 12, fontWeight: 'bold' },
+  weekDayLabel: { fontSize: 10, fontWeight: '700' },
+
+  activeActionsRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  actionBtnOutline: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1.2,
+    alignItems: 'center',
+  },
+  actionBtnOutlineText: { fontSize: 12, fontWeight: '800' },
+  actionBtnPrimary: {
+    flex: 1,
+    paddingVertical: 10,
     borderRadius: 12,
     alignItems: 'center',
-    marginTop: 8,
-    minHeight: 52,
-    justifyContent: 'center',
   },
-  buyButtonText: { fontSize: 16, fontWeight: '700' },
-  buyButtonSub: { color: '#FFE0B2', fontSize: 12, fontWeight: '600', marginTop: 4 },
+  actionBtnPrimaryText: { fontSize: 12, fontWeight: '800' },
+
+  // Expired Card
+  expiredCard: {
+    borderRadius: 20,
+    padding: 18,
+    marginBottom: 16,
+    borderWidth: 1,
+    opacity: 0.75,
+  },
+  expiredTag: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    backgroundColor: '#64748B',
+  },
+  expiredTagText: { fontSize: 10, fontWeight: '900', color: '#FFF' },
+  expiredMealsBadge: {
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 14,
+    backgroundColor: '#64748B20',
+  },
+  expiredMealsCount: { fontSize: 20, fontWeight: '900', color: '#64748B' },
+  expiredMealsLabel: { fontSize: 9, fontWeight: '800', color: '#64748B' },
+  expiredFooterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: 6,
+  },
+  expiredDisabledNote: { fontSize: 11, flex: 1, marginRight: 10 },
+  resubscribeBtn: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10 },
+  resubscribeBtnText: { fontSize: 11, fontWeight: '800' },
+
+  // Empty state
+  emptyCard: {
+    borderRadius: 20,
+    padding: 28,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    marginBottom: 16,
+  },
+  emptyTitle: { fontSize: 16, fontWeight: '800', marginBottom: 4 },
+  emptySub: { fontSize: 12, textAlign: 'center', lineHeight: 18 },
+
+  // Plan Card
+  planCard: {
+    borderRadius: 18,
+    padding: 16,
+    marginBottom: 14,
+  },
+  planHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 8,
+  },
+  planTitle: { fontSize: 16, fontWeight: '800' },
+  tagBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
+  tagBadgeText: { fontSize: 10, fontWeight: '800' },
+  planDesc: { fontSize: 12, marginTop: 4 },
+  planPrice: { fontSize: 18, fontWeight: '900' },
+  planDuration: { fontSize: 11 },
+  bonusBar: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 10,
+    marginTop: 6,
+  },
+  bonusBarText: { fontSize: 11, fontWeight: '800' },
+
+  subscribeBtn: {
+    paddingVertical: 14,
+    borderRadius: 14,
+    alignItems: 'center',
+    marginTop: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  subscribeBtnText: { fontSize: 14, fontWeight: '800' },
+  divider: { height: 1, marginVertical: 12 },
+
+  // Modals Styling
+  modalSafeArea: { flex: 1 },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#00000010',
+  },
+  modalBackBtn: { paddingVertical: 4 },
+  modalBackText: { fontSize: 14, fontWeight: '800' },
+  modalTitle: { fontSize: 16, fontWeight: '900' },
+  modalScroll: { padding: 18, paddingBottom: 40 },
+
+  // Manage Plan Hero
+  manageHeroCard: {
+    borderRadius: 20,
+    padding: 18,
+    borderWidth: 1.2,
+    marginBottom: 20,
+  },
+  heroThumbnail: { width: 56, height: 56, borderRadius: 14 },
+  heroPlanTitle: { fontSize: 18, fontWeight: '900' },
+  heroPlanPrice: { fontSize: 15, fontWeight: '800', marginTop: 2 },
+  heroPlanValid: { fontSize: 11, marginTop: 2 },
+
+  statsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 18,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: '#0000000A',
+  },
+  statCol: { flex: 1, alignItems: 'center' },
+  statValue: { fontSize: 18, fontWeight: '900' },
+  statLabel: { fontSize: 11, marginTop: 2, fontWeight: '600' },
+  statDivider: { width: 1, height: 26, backgroundColor: '#0000001A' },
+
+  actionSectionHeader: { fontSize: 14, fontWeight: '800', marginBottom: 10 },
+  quickActionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 14,
+    borderRadius: 16,
+    borderWidth: 1.2,
+    marginBottom: 10,
+    gap: 12,
+  },
+  quickActionIcon: { fontSize: 20 },
+  quickActionTitle: { fontSize: 14, fontWeight: '800' },
+  quickActionSub: { fontSize: 11, marginTop: 2 },
+  quickActionArrow: { fontSize: 18, fontWeight: '700' },
+
+  // Calendar
+  calendarCard: {
+    borderRadius: 20,
+    padding: 16,
+    borderWidth: 1.2,
+    marginBottom: 16,
+  },
+  calendarLegendRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 14,
+    marginBottom: 12,
+  },
+  legendDot: { width: 8, height: 8, borderRadius: 4 },
+  legendText: { fontSize: 11, fontWeight: '600' },
+  calendarGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    justifyContent: 'space-between',
+  },
+  calDayBox: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#00000008',
+  },
+  calDayBoxScheduled: { backgroundColor: '#22C55E' },
+  calDayBoxSkipped: { backgroundColor: '#F97316' },
+  calDayBoxInteractive: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#0000001A',
+  },
+  calDayBoxSelected: {
+    backgroundColor: '#F97316',
+    borderColor: '#EA580C',
+  },
+  calDayNum: { fontSize: 12, fontWeight: 'bold' },
+  skippedSummaryBanner: {
+    marginTop: 14,
+    padding: 10,
+    borderRadius: 12,
+    backgroundColor: '#FFF7ED',
+  },
+  skippedSummaryText: { fontSize: 11, color: '#C2410C', fontWeight: '700' },
+
+  // Skip Flow
+  chipsRow: { flexDirection: 'row', gap: 10, marginBottom: 14 },
+  chipBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: '#0000000E',
+  },
+  chipBtnText: { fontSize: 12, fontWeight: '700' },
+  reasonInput: {
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontSize: 13,
+  },
+
+  // Confirmation
+  confirmCallout: {
+    backgroundColor: '#FEF3C7',
+    padding: 16,
+    borderRadius: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+  },
+  confirmCalloutTitle: { fontSize: 14, fontWeight: '900', color: '#92400E', marginBottom: 4 },
+  confirmCalloutText: { fontSize: 12, color: '#B45309', lineHeight: 18 },
+  confirmBox: { borderRadius: 18, padding: 18, borderWidth: 1.2 },
+  confirmSectionTitle: { fontSize: 13, fontWeight: '800', marginBottom: 4 },
+  confirmDatesList: { fontSize: 14, fontWeight: '800', marginBottom: 12 },
+  confirmRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 4,
+  },
+  confirmLabel: { fontSize: 12 },
+  confirmVal: { fontSize: 13, fontWeight: '800' },
+
+  // Day-Wise Customization
+  walletAllowanceCard: {
+    borderRadius: 16,
+    padding: 14,
+    borderWidth: 1.2,
+    marginBottom: 10,
+  },
+  walletAllowanceTitle: { fontSize: 14, fontWeight: '900', marginBottom: 4 },
+  walletAllowanceSub: { fontSize: 11, lineHeight: 16 },
+  dayMenuRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1.2,
+    marginBottom: 8,
+  },
+  dayMenuDate: { fontSize: 11, fontWeight: '800', textTransform: 'uppercase' },
+  dayMenuDish: { fontSize: 13, fontWeight: '800', marginTop: 2 },
+  extraChargeText: { fontSize: 10, color: '#F97316', fontWeight: 'bold', marginTop: 2 },
+  selectDishBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10 },
+  selectDishBtnText: { fontSize: 11, fontWeight: '800' },
+
+  dishPickerOverlay: {
+    flex: 1,
+    backgroundColor: '#00000080',
+    justifyContent: 'flex-end',
+  },
+  dishPickerCard: {
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 18,
+    borderWidth: 1,
+  },
+  dishOptionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginBottom: 8,
+  },
+  dishOptionName: { fontSize: 13, fontWeight: '800' },
+  dishOptionDesc: { fontSize: 11, marginTop: 2 },
+  dishOptionPrice: { fontSize: 14, fontWeight: '900' },
 });

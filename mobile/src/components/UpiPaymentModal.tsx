@@ -24,7 +24,9 @@ interface UpiPaymentModalProps {
   note?: string;
   submitting?: boolean;
   onClose: () => void;
-  onConfirmPaid: (utrNumber?: string) => Promise<void> | void;
+  onConfirmPaid?: (utrNumber?: string) => Promise<void> | void;
+  onConfirm?: (utrNumber?: string) => Promise<void> | void;
+  [key: string]: any;
 }
 
 export const UpiPaymentModal: React.FC<UpiPaymentModalProps> = ({
@@ -37,6 +39,8 @@ export const UpiPaymentModal: React.FC<UpiPaymentModalProps> = ({
   submitting = false,
   onClose,
   onConfirmPaid,
+  onConfirm,
+  ...props
 }) => {
   const { theme } = useTheme();
   const [utr, setUtr] = useState('');
@@ -80,7 +84,10 @@ export const UpiPaymentModal: React.FC<UpiPaymentModalProps> = ({
       );
       return;
     }
-    onConfirmPaid(cleanUtr || undefined);
+    const confirmFn = onConfirmPaid || onConfirm;
+    if (typeof confirmFn === 'function') {
+      confirmFn(cleanUtr || undefined);
+    }
   };
 
   return (

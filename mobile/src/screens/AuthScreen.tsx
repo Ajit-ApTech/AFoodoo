@@ -28,6 +28,7 @@ const COUNTRY_CODES = [
 export default function AuthScreen({ navigation }: any) {
   const { theme } = useTheme();
   const [countryCode, setCountryCode] = useState('91');
+  const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [showCountryPicker, setShowCountryPicker] = useState(false);
   const [code, setCode] = useState('');
@@ -89,7 +90,7 @@ export default function AuthScreen({ navigation }: any) {
     const userDocId = `usr_${countryCode}${cleanPhoneDigits}`;
 
     // Sync or create user in Cloud Firestore
-    const firestoreUserData: any = await syncUserWithFirestore(fullPhone);
+    const firestoreUserData: any = await syncUserWithFirestore(fullPhone, name.trim());
     if (firestoreUserData?.is_blocked) {
       setLoading(false);
       Alert.alert(
@@ -118,7 +119,7 @@ export default function AuthScreen({ navigation }: any) {
 
     const authenticatedUser = {
       id: firestoreUserData?.id || userDocId,
-      name: firestoreUserData?.name || `Customer (${fullPhone})`,
+      name: name.trim() || firestoreUserData?.name || `Customer (${fullPhone})`,
       phone: fullPhone,
       wallet_balance: firestoreUserData?.wallet_balance ?? 500,
       is_blocked: firestoreUserData?.is_blocked || false,
@@ -139,22 +140,41 @@ export default function AuthScreen({ navigation }: any) {
         {/* Brand Header */}
         <View style={styles.headerContainer}>
           <Image
-            source={require('../../assets/splash.png')}
-            style={styles.brandLogo}
+            source={
+              theme.mode === 'dark'
+                ? require('../../assets/afoodoo-logo-light.png')
+                : require('../../assets/afoodoo-logo-dark.png')
+            }
+            style={{ width: 230, height: 65, marginBottom: 8 }}
             resizeMode="contain"
           />
-          <Text style={[styles.brandTitle, { color: theme.primary }]}>AFoodoo</Text>
-          <Text style={[styles.brandSubtitle, { color: theme.textSecondary }]}>
-            Home-Cooked Tiffin Meals • Fixed Delivery Windows
-          </Text>
         </View>
 
         {/* Auth Form Card */}
         <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}>
-          <Text style={[styles.cardTitle, { color: theme.textPrimary }]}>Phone Sign In 🔐</Text>
+          <Text style={[styles.cardTitle, { color: theme.textPrimary }]}>Welcome to AFoodoo 👋</Text>
           <Text style={[styles.cardSubtitle, { color: theme.textSecondary }]}>
-            Enter your mobile number to get a one-time verification code.
+            Enter your details to sign in or create your meal account.
           </Text>
+
+          {/* Full Name Input */}
+          <View style={styles.inputGroup}>
+            <Text style={[styles.inputLabel, { color: theme.textPrimary }]}>Full Name</Text>
+            <TextInput
+              placeholder="e.g. Rahul Sharma"
+              placeholderTextColor={theme.textMuted}
+              style={[
+                styles.input,
+                {
+                  backgroundColor: theme.inputBg,
+                  borderColor: theme.inputBorder,
+                  color: theme.inputText,
+                },
+              ]}
+              value={name}
+              onChangeText={setName}
+            />
+          </View>
 
           {/* Country Code + Phone Number Row */}
           <View style={styles.inputGroup}>

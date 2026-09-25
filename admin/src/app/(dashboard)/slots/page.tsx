@@ -1,10 +1,11 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { db } from '../../../lib/firebase';
+import { db, storage } from '../../../lib/firebase';
 import { collection, onSnapshot, doc, updateDoc, addDoc, deleteDoc } from 'firebase/firestore';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { MealSlot } from '../../../types';
-import { Clock, Plus, Check, Power, AlertCircle, Trash2 } from 'lucide-react';
+import { Clock, Plus, Check, Power, AlertCircle, Trash2, Upload, ImageIcon, Loader2 } from 'lucide-react';
 
 export default function MealSlotsPage() {
   const [slots, setSlots] = useState<MealSlot[]>([]);
@@ -15,6 +16,26 @@ export default function MealSlotsPage() {
   const [newCutoffTime, setNewCutoffTime] = useState('09:30 AM');
   const [newDeliveryStart, setNewDeliveryStart] = useState('10:30 AM');
   const [newDeliveryEnd, setNewDeliveryEnd] = useState('11:30 AM');
+  const [newSlotImageUrl, setNewSlotImageUrl] = useState('');
+  const [uploadingImage, setUploadingImage] = useState(false);
+
+  // Upload image to Firebase Storage
+  const handleUploadSlotImage = async (file: File): Promise<string> => {
+    setUploadingImage(true);
+    try {
+      const cleanName = file.name.replace(/[^a-zA-Z0-9.]/g, '_');
+      const storageRef = ref(storage, `slot_graphics/slot_${Date.now()}_${cleanName}`);
+      await uploadBytes(storageRef, file);
+      const downloadUrl = await getDownloadURL(storageRef);
+      setUploadingImage(false);
+      return downloadUrl;
+    } catch (e: any) {
+      console.error('Failed to upload slot image:', e);
+      setUploadingImage(false);
+      alert(`Image upload error: ${e.message}`);
+      throw e;
+    }
+  };
 
   // Real-Time Cloud Firestore listener for meal_slots
   useEffect(() => {
@@ -71,6 +92,7 @@ export default function MealSlotsPage() {
         booking_cutoff_time: editingSlot.booking_cutoff_time,
         delivery_start_time: editingSlot.delivery_start_time,
         delivery_end_time: editingSlot.delivery_end_time,
+        image_url: editingSlot.image_url || '',
       });
     } catch (e) {
       setSlots(prev =>
@@ -91,6 +113,7 @@ export default function MealSlotsPage() {
       delivery_start_time: newDeliveryStart,
       delivery_end_time: newDeliveryEnd,
       active: true,
+      image_url: newSlotImageUrl.trim() || '',
     };
 
     try {
@@ -109,6 +132,7 @@ export default function MealSlotsPage() {
 
     setShowAddModal(false);
     setNewSlotName('');
+    setNewSlotImageUrl('');
   };
 
   return (
@@ -181,6 +205,25 @@ export default function MealSlotsPage() {
               </button>
             </div>
 
+            {/* Slot Banner Graphic Preview */}
+            <div className="flex items-center gap-3 bg-slate-950/80 p-2.5 rounded-xl border border-slate-800 mb-3">
+              <div className="w-12 h-12 rounded-lg overflow-hidden bg-slate-900 border border-slate-700/60 flex-shrink-0 flex items-center justify-center">
+                {slot.image_url ? (
+                  <img src={slot.image_url} alt={slot.name} className="w-full h-full object-cover" />
+                ) : (
+                  <img src="/assets/hero_biryani_bowl.jpg" alt="Default Biryani" className="w-full h-full object-cover opacity-80" />
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <span className="text-[11px] font-semibold text-slate-300 block">
+                  {slot.image_url ? 'Custom Slot Graphic' : 'Default Biryani Bowl'}
+                </span>
+                <span className="text-[10px] text-slate-500 truncate block">
+                  {slot.image_url || 'Active fallback shown on customer mobile card'}
+                </span>
+              </div>
+            </div>
+
             <div className="space-y-3 text-xs">
               <div className="flex items-center justify-between bg-slate-950/60 p-3 rounded-xl border border-slate-800/80">
                 <span className="text-slate-400 font-medium">Booking Window Opens:</span>
@@ -216,7 +259,7 @@ export default function MealSlotsPage() {
                 onClick={() => setEditingSlot(slot)}
                 className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs px-4 py-2 rounded-lg border border-slate-700 transition-all"
               >
-                Edit Cutoff Timings ✏️
+                Edit Cutoff & Graphic ✏️
               </button>
             </div>
           </div>
@@ -226,12 +269,12 @@ export default function MealSlotsPage() {
       {/* Edit Slot Modal */}
       {editingSlot ? (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-slate-900 border border-slate-800 max-w-md w-full rounded-2xl p-6 shadow-2xl space-y-5">
+          <div className="bg-slate-900 border border-slate-800 max-w-md w-full rounded-2xl p-6 shadow-2xl space-y-4">
             <h3 className="text-lg font-bold text-white">
-              Edit Cutoff for {editingSlot.name}
+              Edit Slot: {editingSlot.name}
             </h3>
 
-            <div className="space-y-4">
+            <div className="space-y-3.5">
               <div>
                 <label className="block text-xs font-semibold text-slate-400 mb-1">
                   Slot Name
@@ -242,64 +285,111 @@ export default function MealSlotsPage() {
                   onChange={e =>
                     setEditingSlot({ ...editingSlot, name: e.target.value })
                   }
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-100 font-bold"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm text-slate-100 font-bold"
                 />
               </div>
 
+              {/* Slot Graphic Photo Upload */}
               <div>
                 <label className="block text-xs font-semibold text-slate-400 mb-1">
-                  Booking Open Time
+                  Slot Food Graphic (Shown on Mobile Card)
                 </label>
-                <input
-                  type="text"
-                  value={editingSlot.booking_open_time}
-                  onChange={e =>
-                    setEditingSlot({ ...editingSlot, booking_open_time: e.target.value })
-                  }
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-100 font-semibold"
-                />
+                <div className="flex items-center gap-3">
+                  <div className="w-14 h-14 rounded-xl overflow-hidden bg-slate-950 border border-slate-800 flex-shrink-0 flex items-center justify-center">
+                    {editingSlot.image_url ? (
+                      <img src={editingSlot.image_url} alt="Slot Graphic" className="w-full h-full object-cover" />
+                    ) : (
+                      <ImageIcon className="h-6 w-6 text-slate-600" />
+                    )}
+                  </div>
+                  <div className="flex-1 space-y-1.5">
+                    <label className="inline-flex items-center gap-1.5 bg-orange-600/20 hover:bg-orange-600/30 text-orange-400 border border-orange-500/40 text-xs font-semibold px-3 py-1.5 rounded-lg cursor-pointer transition-all">
+                      {uploadingImage ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                      <span>{uploadingImage ? 'Uploading Image...' : 'Upload Image Photo'}</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        disabled={uploadingImage}
+                        onChange={async e => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          try {
+                            const url = await handleUploadSlotImage(file);
+                            setEditingSlot({ ...editingSlot, image_url: url });
+                          } catch (err) {}
+                        }}
+                      />
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Or paste direct image URL"
+                      value={editingSlot.image_url || ''}
+                      onChange={e => setEditingSlot({ ...editingSlot, image_url: e.target.value })}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200"
+                    />
+                  </div>
+                </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1">
-                  Booking Cutoff Time
-                </label>
-                <input
-                  type="text"
-                  value={editingSlot.booking_cutoff_time}
-                  onChange={e =>
-                    setEditingSlot({ ...editingSlot, booking_cutoff_time: e.target.value })
-                  }
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-100 font-bold text-orange-400"
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 mb-1">
+                    Booking Open Time
+                  </label>
+                  <input
+                    type="text"
+                    value={editingSlot.booking_open_time}
+                    onChange={e =>
+                      setEditingSlot({ ...editingSlot, booking_open_time: e.target.value })
+                    }
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-100 font-semibold"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 mb-1">
+                    Booking Cutoff Time
+                  </label>
+                  <input
+                    type="text"
+                    value={editingSlot.booking_cutoff_time}
+                    onChange={e =>
+                      setEditingSlot({ ...editingSlot, booking_cutoff_time: e.target.value })
+                    }
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-100 font-bold text-orange-400"
+                  />
+                </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1">
-                  Delivery Start Time
-                </label>
-                <input
-                  type="text"
-                  value={editingSlot.delivery_start_time}
-                  onChange={e =>
-                    setEditingSlot({ ...editingSlot, delivery_start_time: e.target.value })
-                  }
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-100 font-semibold"
-                />
-              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 mb-1">
+                    Delivery Start Time
+                  </label>
+                  <input
+                    type="text"
+                    value={editingSlot.delivery_start_time}
+                    onChange={e =>
+                      setEditingSlot({ ...editingSlot, delivery_start_time: e.target.value })
+                    }
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-100 font-semibold"
+                  />
+                </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1">
-                  Delivery End Time
-                </label>
-                <input
-                  type="text"
-                  value={editingSlot.delivery_end_time}
-                  onChange={e =>
-                    setEditingSlot({ ...editingSlot, delivery_end_time: e.target.value })
-                  }
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-100 font-semibold"
-                />
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 mb-1">
+                    Delivery End Time
+                  </label>
+                  <input
+                    type="text"
+                    value={editingSlot.delivery_end_time}
+                    onChange={e =>
+                      setEditingSlot({ ...editingSlot, delivery_end_time: e.target.value })
+                    }
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-100 font-semibold"
+                  />
+                </div>
               </div>
             </div>
 
@@ -356,6 +446,49 @@ export default function MealSlotsPage() {
                 placeholder="Breakfast Tiffin Special"
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-100"
               />
+            </div>
+
+            {/* Custom Slot Graphic */}
+            <div>
+              <label className="block text-xs font-semibold text-slate-400 mb-1">
+                Slot Food Graphic Image
+              </label>
+              <div className="flex items-center gap-3">
+                <div className="w-14 h-14 rounded-xl overflow-hidden bg-slate-950 border border-slate-800 flex-shrink-0 flex items-center justify-center">
+                  {newSlotImageUrl ? (
+                    <img src={newSlotImageUrl} alt="Preview" className="w-full h-full object-cover" />
+                  ) : (
+                    <ImageIcon className="h-6 w-6 text-slate-600" />
+                  )}
+                </div>
+                <div className="flex-1 space-y-1.5">
+                  <label className="inline-flex items-center gap-1.5 bg-orange-600/20 hover:bg-orange-600/30 text-orange-400 border border-orange-500/40 text-xs font-semibold px-3 py-1.5 rounded-lg cursor-pointer transition-all">
+                    {uploadingImage ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                    <span>{uploadingImage ? 'Uploading Image...' : 'Upload Slot Graphic'}</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      disabled={uploadingImage}
+                      onChange={async e => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        try {
+                          const url = await handleUploadSlotImage(file);
+                          setNewSlotImageUrl(url);
+                        } catch (err) {}
+                      }}
+                    />
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Or paste direct image URL"
+                    value={newSlotImageUrl}
+                    onChange={e => setNewSlotImageUrl(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200"
+                  />
+                </div>
+              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-3">

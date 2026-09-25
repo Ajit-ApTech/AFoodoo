@@ -15,6 +15,7 @@ export interface MealSlot {
   delivery_start_time: string;
   delivery_end_time: string;
   active: boolean;
+  image_url?: string;
 }
 
 export interface MenuItem {
@@ -55,11 +56,16 @@ export interface DeliveryAddress {
 
 export interface Order {
   id: string;
+  order_code?: string;
   user_id: string;
   user_name?: string;
   user_phone?: string;
-  menu_item_id: string;
+  menu_item_id?: string;
   menu_title?: string;
+  items?: any[];
+  subtotal?: number;
+  delivery_fee?: number;
+  platform_fee?: number;
   meal_slot_id: string;
   slot_name?: string;
   status: OrderStatus;
@@ -98,6 +104,8 @@ export interface DeliveryConfig {
   merchant_name?: string;
   upi_qr_image_url?: string;
   enable_cod?: boolean;
+  delivery_fee?: number;
+  platform_fee?: number;
   updated_at: string;
 }
 

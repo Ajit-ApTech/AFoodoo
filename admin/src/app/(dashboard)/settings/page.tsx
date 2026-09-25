@@ -23,6 +23,8 @@ const DEFAULT_CONFIG: DeliveryConfig = {
   merchant_name: 'AFoodoo Kitchen',
   upi_qr_image_url: '',
   enable_cod: true,
+  delivery_fee: 30,
+  platform_fee: 10,
   updated_at: '',
 };
 
@@ -358,6 +360,61 @@ export default function DeliverySettingsPage() {
               }))
             }
           />
+        </div>
+      </div>
+
+      {/* Section C: Order Checkout Fees (Delivery & Platform Fee) */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-5">
+        <div className="flex items-center gap-2 border-b border-slate-800 pb-4">
+          <Truck className="h-5 w-5 text-amber-400" />
+          <div>
+            <h2 className="text-base font-extrabold text-white">Order Checkout Fees (Customer App)</h2>
+            <p className="text-xs text-slate-400">
+              Manage the delivery fee and platform fee charged to customers at checkout.
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+          <div>
+            <label className={labelClass}>Standard Delivery Fee per Order (₹)</label>
+            <input
+              type="number"
+              min={0}
+              className={inputClass}
+              placeholder="e.g. 30"
+              value={config.delivery_fee ?? 30}
+              onChange={e =>
+                setConfig(prev => ({
+                  ...prev,
+                  delivery_fee: Math.max(0, parseInt(e.target.value) || 0),
+                }))
+              }
+            />
+            <p className="text-xs text-slate-500 mt-1.5">
+              Set to 0 for Free Delivery across all customer orders.
+            </p>
+          </div>
+
+          <div>
+            <label className={labelClass}>Platform / Packaging Fee per Order (₹)</label>
+            <input
+              type="number"
+              min={0}
+              className={inputClass}
+              placeholder="e.g. 10"
+              value={config.platform_fee ?? 10}
+              onChange={e =>
+                setConfig(prev => ({
+                  ...prev,
+                  platform_fee: Math.max(0, parseInt(e.target.value) || 0),
+                }))
+              }
+            />
+            <p className="text-xs text-slate-500 mt-1.5">
+              Fixed packaging and platform maintenance fee added to order total.
+            </p>
+          </div>
         </div>
       </div>
 

@@ -18,13 +18,14 @@ import { doc, onSnapshot, collection } from 'firebase/firestore';
 import { useAppStore } from '../store/appStore';
 import { useTheme } from '../theme/ThemeContext';
 import { fetchOrdersFromRest } from '../api/firestoreApi';
+import { BottomNavBar, BottomTabType } from '../components/BottomNavBar';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
 export default function OrderTrackingScreen({ route, navigation }: any) {
-  const { theme } = useTheme();
+  const { theme, isDark } = useTheme();
   const user = useAppStore(state => state.user);
   const routeOrderId = route?.params?.orderId;
 
@@ -330,7 +331,7 @@ export default function OrderTrackingScreen({ route, navigation }: any) {
                     <View style={styles.headerMainInfo}>
                       <View style={styles.orderTitleRow}>
                         <Text style={[styles.orderIdText, { color: theme.textPrimary }]}>
-                          #{ord.id.slice(-8)}
+                          #{ord.order_code || (ord.id ? 'ORD-' + ord.id.slice(-4).toUpperCase() : 'ORD')}
                         </Text>
                         <View
                           style={[
@@ -478,6 +479,183 @@ export default function OrderTrackingScreen({ route, navigation }: any) {
                         )}
                       </View>
 
+                      {/* Ordered Meals & Complete Payment Details */}
+                      {(() => {
+                        const displayItems =
+                          Array.isArray(ord.items) && ord.items.length > 0
+                            ? ord.items
+                            : [
+                                {
+                                  title: ord.menu_title || 'Tiffin Meal',
+                                  quantity: 1,
+                                  price: ord.price || ord.total_amount || 0,
+                                },
+                              ];
+                        const totalItemCount = displayItems.reduce(
+                          (s: number, i: any) => s + (Number(i.quantity) || 1),
+                          0
+                        );
+                        const computedSubtotal =
+                          ord.subtotal != null
+                            ? Number(ord.subtotal)
+                            : displayItems.reduce(
+                                (s: number, i: any) =>
+                                  s + (Number(i.price) || 0) * (Number(i.quantity) || 1),
+                                0
+                              );
+                        const deliveryFee = ord.delivery_fee != null ? Number(ord.delivery_fee) : null;
+                        const platformFee = ord.platform_fee != null ? Number(ord.platform_fee) : null;
+                        const discount = ord.discount != null ? Number(ord.discount) : null;
+                        const totalPaid = Number(ord.total_amount ?? ord.price ?? computedSubtotal);
+
+                        const payMethodLabel =
+                          ord.payment_method === 'wallet'
+                            ? '👛 Paid via AFoodoo Wallet'
+                            : ord.payment_method === 'upi'
+                            ? '📱 Paid via Direct UPI'
+                            : ord.payment_method === 'cod'
+                            ? '💵 Cash on Delivery'
+                            : '✓ Payment Confirmed';
+
+                        return (
+                          <View
+                            style={{
+                              backgroundColor: theme.surface,
+                              borderRadius: 14,
+                              padding: 14,
+                              marginBottom: 16,
+                              borderWidth: 1,
+                              borderColor: theme.inputBorder,
+                            }}
+                          >
+                            <Text
+                              style={{
+                                fontSize: 11,
+                                fontWeight: '700',
+                                color: theme.textSecondary,
+                                marginBottom: 10,
+                                textTransform: 'uppercase',
+                                letterSpacing: 0.5,
+                              }}
+                            >
+                              🍱 Ordered Meals & Items ({totalItemCount})
+                            </Text>
+
+                            {/* Item list */}
+                            {displayItems.map((it: any, i: number) => {
+                              const itTitle =
+                                it.title || it.name || it.menu_title || ord.menu_title || 'Tiffin Meal';
+                              const itQty = Number(it.quantity || it.qty || 1);
+                              const itPrice = Number(it.price || 0);
+
+                              return (
+                                <View
+                                  key={it.id || i}
+                                  style={{
+                                    flexDirection: 'row',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center',
+                                    paddingVertical: 6,
+                                    borderBottomWidth: 1,
+                                    borderBottomColor: isDark ? 'rgba(255,255,255,0.06)' : '#F3F4F6',
+                                  }}
+                                >
+                                  <Text
+                                    style={{
+                                      fontSize: 13,
+                                      color: theme.textPrimary,
+                                      fontWeight: '600',
+                                      flex: 1,
+                                    }}
+                                  >
+                                    {itTitle}{' '}
+                                    <Text style={{ color: theme.primary, fontWeight: '800' }}>
+                                      × {itQty}
+                                    </Text>
+                                  </Text>
+                                  <Text
+                                    style={{
+                                      fontSize: 13,
+                                      color: theme.textSecondary,
+                                      fontWeight: '700',
+                                    }}
+                                  >
+                                    ₹{(itPrice * itQty).toFixed(0)}
+                                  </Text>
+                                </View>
+                              );
+                            })}
+
+                            {/* Complete Payment Breakdown */}
+                            <View style={{ paddingTop: 10, gap: 5 }}>
+                              <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                                <Text style={{ fontSize: 12, color: theme.textSecondary }}>Item Subtotal</Text>
+                                <Text style={{ fontSize: 12, color: theme.textPrimary, fontWeight: '600' }}>
+                                  ₹{computedSubtotal.toFixed(0)}
+                                </Text>
+                              </View>
+
+                              {deliveryFee != null && (
+                                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                                <Text style={{ fontSize: 12, color: theme.textSecondary }}>Delivery Fee</Text>
+                                  <Text
+                                    style={{
+                                      fontSize: 12,
+                                      color: deliveryFee === 0 ? theme.statusSuccessText : theme.textPrimary,
+                                      fontWeight: '600',
+                                    }}
+                                  >
+                                    {deliveryFee === 0 ? 'FREE' : `₹${deliveryFee}`}
+                                  </Text>
+                                </View>
+                              )}
+
+                              {platformFee != null && (
+                                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                                  <Text style={{ fontSize: 12, color: theme.textSecondary }}>Platform & Packaging</Text>
+                                  <Text style={{ fontSize: 12, color: theme.textPrimary, fontWeight: '600' }}>
+                                    ₹{platformFee}
+                                  </Text>
+                                </View>
+                              )}
+
+                              {discount != null && discount > 0 && (
+                                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                                  <Text style={{ fontSize: 12, color: theme.statusSuccessText }}>Coupon Discount</Text>
+                                  <Text style={{ fontSize: 12, color: theme.statusSuccessText, fontWeight: '700' }}>
+                                    -₹{discount}
+                                  </Text>
+                                </View>
+                              )}
+
+                              <View
+                                style={{
+                                  borderTopWidth: 1,
+                                  borderTopColor: theme.inputBorder,
+                                  paddingTop: 8,
+                                  marginTop: 4,
+                                  flexDirection: 'row',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center',
+                                }}
+                              >
+                                <View>
+                                  <Text style={{ fontSize: 12, fontWeight: '700', color: theme.textPrimary }}>
+                                    Total Paid
+                                  </Text>
+                                  <Text style={{ fontSize: 10, color: theme.textMuted, marginTop: 1 }}>
+                                    {payMethodLabel}
+                                  </Text>
+                                </View>
+                                <Text style={{ fontSize: 15, fontWeight: '900', color: theme.primary }}>
+                                  ₹{totalPaid.toFixed(0)}
+                                </Text>
+                              </View>
+                            </View>
+                          </View>
+                        );
+                      })()}
+
                       {/* Post-Delivery Rating */}
                       {currentStep === 3 ? (
                         <View
@@ -520,6 +698,15 @@ export default function OrderTrackingScreen({ route, navigation }: any) {
           <Text style={[styles.homeButtonText, { color: theme.surface }]}>Return to Home</Text>
         </TouchableOpacity>
       </ScrollView>
+      <BottomNavBar
+        currentTab="Orders"
+        onSelectTab={(tab: BottomTabType) => {
+          if (tab === 'Orders') return;
+          if (tab === 'Home') navigation.navigate('Home');
+          else if (tab === 'Wallet') navigation.navigate('Wallet');
+          else if (tab === 'Account') navigation.navigate('Profile');
+        }}
+      />
     </SafeAreaView>
   );
 }

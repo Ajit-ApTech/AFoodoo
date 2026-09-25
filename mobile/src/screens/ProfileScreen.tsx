@@ -16,6 +16,7 @@ import {
 import { useAppStore } from '../store/appStore';
 import { useTheme, ThemeMode } from '../theme/ThemeContext';
 import { DeliveryAddress } from '../types';
+import { BottomNavBar, BottomTabType } from '../components/BottomNavBar';
 
 export default function ProfileScreen({ navigation }: any) {
   const user = useAppStore(state => state.user);
@@ -717,6 +718,16 @@ export default function ProfileScreen({ navigation }: any) {
           </View>
         </View>
       </Modal>
+
+      <BottomNavBar
+        currentTab="Account"
+        onSelectTab={(tab: BottomTabType) => {
+          if (tab === 'Account') return;
+          if (tab === 'Home') navigation.navigate('Home');
+          else if (tab === 'Orders') navigation.navigate('OrderTracking');
+          else if (tab === 'Wallet') navigation.navigate('Wallet');
+        }}
+      />
     </SafeAreaView>
   );
 }

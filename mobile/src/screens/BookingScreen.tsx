@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -10,54 +10,78 @@ import {
   ScrollView,
   Image,
   ActivityIndicator,
+  Modal,
 } from 'react-native';
 import { useAppStore } from '../store/appStore';
 import { placeOrder } from '../api/orders';
 import { submitPaymentRequest } from '../api/payments';
+import { getNextOrderCode } from '../api/orderCode';
 import { useTheme } from '../theme/ThemeContext';
 import { haversineDistance, buildMapsLink } from '../utils/geo';
-import { generateUpiUrl } from '../utils/upi';
-import { Linking } from 'react-native';
 import { UpiPaymentModal } from '../components/UpiPaymentModal';
 import { getCachedPushToken } from '../services/notificationService';
 
 export default function BookingScreen({ route, navigation }: any) {
-  const { theme } = useTheme();
-  const item = route?.params?.item || {
-    id: 'm1',
-    title: 'North Indian Deluxe Thali',
-    price: 199,
-    image_url: 'https://images.unsplash.com/photo-1546833999-b9f581a1996d?auto=format&fit=crop&w=600&q=80',
-  };
+  const { theme, isDark } = useTheme();
 
+  // App store
   const user = useAppStore(state => state.user);
   const setUser = useAppStore(state => state.setUser);
   const activeSlot = useAppStore(state => state.activeSlot);
   const deductWalletBalance = useAppStore(state => state.deductWalletBalance);
+  const cart = useAppStore(state => state.cart);
+  const addToCart = useAppStore(state => state.addToCart);
+  const removeFromCart = useAppStore(state => state.removeFromCart);
+  const updateCartQuantity = useAppStore(state => state.updateCartQuantity);
+  const clearCart = useAppStore(state => state.clearCart);
+
+  // If a single item was passed via navigation and not yet in cart, add it
+  const routeItem = route?.params?.item;
+  useEffect(() => {
+    if (routeItem && cart.length === 0) {
+      addToCart(routeItem, activeSlot);
+    }
+  }, [routeItem]);
 
   // Delivery form state — pre-filled from user's last saved address
   const savedAddr = user?.addresses && user.addresses.length > 0 ? user.addresses[0] : null;
-  const [receiverName, setReceiverName] = useState(savedAddr?.receiver_name || user?.name || '');
-  const [receiverPhone, setReceiverPhone] = useState(savedAddr?.receiver_phone || user?.phone || '');
-  const [addressLine1, setAddressLine1] = useState(savedAddr?.line1 || '');
-  const [landmark, setLandmark] = useState(savedAddr?.landmark || '');
-  const [city, setCity] = useState(savedAddr?.city || '');
-  const [pincode, setPincode] = useState(savedAddr?.zip || '');
+  const [receiverName, setReceiverName] = useState(savedAddr?.receiver_name || user?.name || 'Ajit p');
+  const [receiverPhone, setReceiverPhone] = useState(savedAddr?.receiver_phone || user?.phone || '+917491009852');
+  const [addressLine1, setAddressLine1] = useState(savedAddr?.line1 || 'M8W2+7RW, North Chotanagpur Division, Potanga');
+  const [landmark, setLandmark] = useState(savedAddr?.landmark || 'Near birsa workshop');
+  const [city, setCity] = useState(savedAddr?.city || 'Potanga');
+  const [pincode, setPincode] = useState(savedAddr?.zip || '825311');
   const [detectedLat, setDetectedLat] = useState<number | null>(savedAddr?.latitude ?? null);
   const [detectedLng, setDetectedLng] = useState<number | null>(savedAddr?.longitude ?? null);
   const [locating, setLocating] = useState(false);
+  const [isEditingAddress, setIsEditingAddress] = useState(false);
 
-  const [paymentMethod, setPaymentMethod] = useState<'upi' | 'wallet' | 'cod'>('upi');
+  // Delivery instructions
+  const [deliveryInstructions, setDeliveryInstructions] = useState('');
+
+  // Coupon state
+  const [couponCode, setCouponCode] = useState('');
+  const [couponDiscount, setCouponDiscount] = useState(0);
+  const [couponApplied, setCouponApplied] = useState(false);
+  const [couponMsg, setCouponMsg] = useState('');
+
+  // Payment settings state
+  const [paymentMethod, setPaymentMethod] = useState<'upi' | 'wallet' | 'cod'>('wallet');
   const [upiId, setUpiId] = useState('afoodoo@upi');
   const [merchantName, setMerchantName] = useState('AFoodoo Kitchen');
   const [customQrUrl, setCustomQrUrl] = useState('');
   const [enableCod, setEnableCod] = useState(true);
+
+  // Live admin-controlled fees
+  const [deliveryFee, setDeliveryFee] = useState<number>(30);
+  const [platformFee, setPlatformFee] = useState<number>(10);
+
   const [submitting, setSubmitting] = useState(false);
   const [showUpiModal, setShowUpiModal] = useState(false);
   const [pendingUpiPayload, setPendingUpiPayload] = useState<any>(null);
 
-  // Read live UPI ID & Payment settings from Cloud Firestore settings/delivery_config
-  React.useEffect(() => {
+  // Read live UPI ID, Payment & Admin Fee settings from Cloud Firestore settings/delivery_config
+  useEffect(() => {
     try {
       const { doc, onSnapshot } = require('firebase/firestore');
       const { firestore } = require('../firebaseConfig');
@@ -68,14 +92,58 @@ export default function BookingScreen({ route, navigation }: any) {
           if (d.merchant_name) setMerchantName(d.merchant_name);
           if (d.upi_qr_image_url) setCustomQrUrl(d.upi_qr_image_url);
           if (d.enable_cod != null) setEnableCod(d.enable_cod);
+          if (d.delivery_fee != null) setDeliveryFee(Number(d.delivery_fee));
+          if (d.platform_fee != null) setPlatformFee(Number(d.platform_fee));
         }
       });
       return unsub;
     } catch (e) {}
   }, []);
 
-  const walletBalance = user?.wallet_balance ?? 500;
-  const isWalletSufficient = walletBalance >= item.price;
+  // Items in checkout: either cart items or route item fallback
+  const checkoutItems =
+    cart.length > 0
+      ? cart
+      : routeItem
+      ? [
+          {
+            id: routeItem.id,
+            title: routeItem.title,
+            price: routeItem.price,
+            quantity: 1,
+            image_url: routeItem.image_url,
+            delivery_window: '1:00 PM – 2:00 PM',
+          },
+        ]
+      : [];
+
+  const subtotal = checkoutItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const finalDeliveryFee = subtotal > 0 ? deliveryFee : 0;
+  const finalPlatformFee = subtotal > 0 ? platformFee : 0;
+  const totalAmount = Math.max(0, subtotal + finalDeliveryFee + finalPlatformFee - couponDiscount);
+
+  const walletBalance = user?.wallet_balance ?? 10204;
+  const isWalletSufficient = walletBalance >= totalAmount;
+
+  const handleApplyCoupon = () => {
+    const code = couponCode.trim().toUpperCase();
+    if (!code) {
+      setCouponMsg('Please enter a coupon code.');
+      return;
+    }
+    if (code === 'AFOODOO50' || code === 'FIRST50') {
+      const discount = Math.min(50, Math.floor(subtotal * 0.5));
+      setCouponDiscount(discount);
+      setCouponApplied(true);
+      setCouponMsg(`✓ Coupon applied! Saved ₹${discount}`);
+    } else if (code === 'FREE' || code === 'FREEDEL') {
+      setCouponDiscount(finalDeliveryFee);
+      setCouponApplied(true);
+      setCouponMsg(`✓ Free Delivery applied! Saved ₹${finalDeliveryFee}`);
+    } else {
+      setCouponMsg('Invalid coupon code. Try AFOODOO50 or FREEDEL.');
+    }
+  };
 
   const handleDetectLocation = async () => {
     setLocating(true);
@@ -97,72 +165,64 @@ export default function BookingScreen({ route, navigation }: any) {
       setDetectedLat(lat);
       setDetectedLng(lng);
 
-      // Auto-fill address via native OS reverse geocoding
-      try {
-        const geocoded = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
-        if (geocoded && geocoded.length > 0) {
-          const g = geocoded[0];
-          const streetParts = [g.name, g.streetNumber, g.street, g.subregion].filter(Boolean);
-          const detectedStreet = streetParts.length > 0 ? streetParts.join(', ') : '';
-          const detectedCity = g.city || g.subregion || g.district || '';
-          const detectedZip = g.postalCode || '';
-
-          if (detectedStreet) {
-            setAddressLine1(detectedStreet);
-          }
-          if (detectedCity) {
-            setCity(detectedCity);
-          }
-          if (detectedZip) {
-            setPincode(detectedZip);
-          }
-        }
-      } catch (geocodeErr) {}
-
-      Alert.alert('📍 Location Detected', 'City, Pincode, and street address have been updated from your current GPS location.');
+      const [geo] = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
+      if (geo) {
+        const parts = [geo.name, geo.street, geo.district || geo.subregion].filter(Boolean);
+        if (parts.length > 0) setAddressLine1(parts.join(', '));
+        if (geo.city) setCity(geo.city);
+        if (geo.postalCode) setPincode(geo.postalCode);
+      }
     } catch (e: any) {
-      Alert.alert('Location Error', `Could not detect location: ${e.message}`);
+      Alert.alert('GPS Notice', 'Could not fetch current coordinates. Please enter manually.');
+    } finally {
+      setLocating(false);
     }
-    setLocating(false);
   };
 
   const handleConfirmUpiPayment = async (utrNumber?: string) => {
     if (!pendingUpiPayload) return;
     setSubmitting(true);
     try {
+      const orderCode = await getNextOrderCode();
+      const menuTitle =
+        checkoutItems.length > 1
+          ? checkoutItems.map(i => `${i.title} (${i.quantity})`).join(', ')
+          : checkoutItems[0]?.title || 'Tiffin Meal';
+      const menuItemId = checkoutItems[0]?.id || 'item_default';
+      const deliveryWindow = checkoutItems[0]?.delivery_window || '01:00 PM – 02:30 PM';
+
       const result = await submitPaymentRequest({
         type: 'order',
         userId: pendingUpiPayload.userId,
-        userName: user?.name || pendingUpiPayload.receiverName || 'AFoodoo Customer',
-        userPhone: user?.phone || pendingUpiPayload.receiverPhone || '+91 98765 43210',
-        amount: pendingUpiPayload.price,
-        utrNumber,
+        userName: pendingUpiPayload.receiverName,
+        userPhone: pendingUpiPayload.receiverPhone,
+        amount: totalAmount,
+        utrNumber: utrNumber || undefined,
         orderPayload: {
-          menu_item_id: item.id,
-          menu_title: item.title,
+          order_code: orderCode,
+          items: checkoutItems,
+          menu_item_id: menuItemId,
+          menu_title: menuTitle,
+          delivery_window: deliveryWindow,
+          subtotal,
+          delivery_fee: finalDeliveryFee,
+          platform_fee: finalPlatformFee,
+          total_amount: totalAmount,
           meal_slot_id: pendingUpiPayload.slotId,
-          slot_name: activeSlot?.name || 'Lunch Tiffin',
-          delivery_window: activeSlot?.delivery_start_time && activeSlot?.delivery_end_time
-            ? `${activeSlot.delivery_start_time} – ${activeSlot.delivery_end_time}`
-            : activeSlot?.name?.toLowerCase().includes('dinner')
-            ? '7:30 PM – 8:30 PM'
-            : '1:00 PM – 2:00 PM',
+          slot_name: activeSlot?.name || 'Lunch Special',
           delivery_address: pendingUpiPayload.deliveryAddress,
           receiver_name: pendingUpiPayload.receiverName,
           receiver_phone: pendingUpiPayload.receiverPhone,
-          delivery_lat: pendingUpiPayload.detectedLat,
-          delivery_lng: pendingUpiPayload.detectedLng,
-          maps_link: pendingUpiPayload.mapsLink,
-          delivery_distance_km: pendingUpiPayload.deliveryDistanceKm,
-          price: pendingUpiPayload.price,
+          instructions: deliveryInstructions,
         },
       });
 
+      clearCart();
       setShowUpiModal(false);
       setSubmitting(false);
       Alert.alert(
         'Payment Request Submitted ⏳',
-        `Your order verification request for ₹${item.price} has been sent to our kitchen team.\n\nOnce admin verifies the payment, your order will be confirmed!`,
+        `Your order payment verification request for ₹${totalAmount} has been sent.\n\nOnce admin verifies the payment, your order will be confirmed!`,
         [
           {
             text: 'Track Order',
@@ -176,87 +236,40 @@ export default function BookingScreen({ route, navigation }: any) {
       );
     } catch (err: any) {
       setSubmitting(false);
-      Alert.alert('Payment Request Error', err.message || 'Could not submit payment request.');
+      Alert.alert('Payment Error', err.message || 'Could not submit payment request.');
     }
   };
 
-  const handleConfirmOrder = async () => {
-    if (item.is_available === false) {
-      Alert.alert('Item Sold Out 🔒', 'Sorry, this meal has been marked as sold out by admin and cannot be ordered.');
+  const handleProceedToPayment = async () => {
+    if (checkoutItems.length === 0) {
+      Alert.alert('Cart is Empty', 'Please add items to your cart before proceeding.');
       return;
     }
 
     if (!receiverName.trim()) {
-      Alert.alert('Recipient Name Required', 'Please enter the name of the person receiving the delivery.');
+      Alert.alert('Recipient Name Required', 'Please enter the delivery recipient name.');
       return;
     }
     if (!receiverPhone.trim()) {
-      Alert.alert('Contact Number Required', 'Please enter a contact number for the delivery recipient.');
+      Alert.alert('Contact Number Required', 'Please enter a contact number for delivery.');
       return;
     }
     if (!addressLine1.trim()) {
-      Alert.alert('Address Required', 'Please provide a flat/house number and street address for delivery.');
-      return;
-    }
-    if (!city.trim()) {
-      Alert.alert('City Required', 'Please enter your city.');
+      Alert.alert('Address Required', 'Please provide a flat/house number and street address.');
       return;
     }
 
     if (paymentMethod === 'wallet' && !isWalletSufficient) {
-      Alert.alert('Insufficient Balance', 'Please top up your AFoodoo Wallet or choose Direct UPI / Cash on Delivery.');
+      Alert.alert(
+        'Insufficient Wallet Balance',
+        `Your wallet balance is ₹${walletBalance.toFixed(0)}, but order total is ₹${totalAmount}. Please choose Direct UPI or Cash on Delivery.`
+      );
       return;
     }
 
-    // Delivery range check — read kitchen GPS strictly from Cloud Firestore settings/delivery_config
-    if (detectedLat && detectedLng) {
-      try {
-        const { doc, getDoc } = require('firebase/firestore');
-        const { firestore } = require('../firebaseConfig');
-        const configSnap = await getDoc(doc(firestore, 'settings', 'delivery_config'));
-        if (configSnap.exists()) {
-          const config = configSnap.data();
-          const kitchenLat = config.kitchen_lat;
-          const kitchenLng = config.kitchen_lng;
-          const maxRadius = config.max_delivery_radius_km || 25;
-
-          if (kitchenLat && kitchenLng) {
-            const distanceKm = haversineDistance(detectedLat, detectedLng, kitchenLat, kitchenLng);
-            if (distanceKm > maxRadius) {
-              Alert.alert(
-                'Outside Delivery Area 📍',
-                `Sorry, we currently deliver only within ${maxRadius} km of our kitchen. Your location is ${distanceKm} km away. We're working on expanding our delivery area!`
-              );
-              return;
-            }
-          }
-        }
-      } catch (rangeErr) {
-        // If settings not configured, skip range check gracefully
-      }
-    }
-
-    const slotId = activeSlot?.id || 'slot_lunch_today';
+    const slotId = activeSlot?.id || 'slot_lunch_special';
     const userId = user?.id || 'demo-user-123';
     const otpCode = Math.floor(1000 + Math.random() * 9000).toString();
-
-    // Calculate distance from kitchen for admin display
-    let deliveryDistanceKm: number | undefined;
-    let mapsLink: string | undefined;
-    if (detectedLat && detectedLng) {
-      mapsLink = buildMapsLink(detectedLat, detectedLng);
-      try {
-        const { doc, getDoc } = require('firebase/firestore');
-        const { firestore } = require('../firebaseConfig');
-        const configSnap = await getDoc(doc(firestore, 'settings', 'delivery_config'));
-        if (configSnap.exists()) {
-          const config = configSnap.data();
-          if (config.kitchen_lat && config.kitchen_lng) {
-            deliveryDistanceKm = haversineDistance(detectedLat, detectedLng, config.kitchen_lat, config.kitchen_lng);
-          }
-        }
-      } catch (e) {}
-    }
 
     const deliveryAddress = {
       label: 'Home',
@@ -270,40 +283,9 @@ export default function BookingScreen({ route, navigation }: any) {
       longitude: detectedLng ?? undefined,
     };
 
-    // Save address to user's saved addresses for future convenience
-    const userDocId = user?.id || `usr_${(user?.phone || '').replace(/\D/g, '')}`;
-    const savedAddress = {
-      ...deliveryAddress,
-      id: `addr_${Date.now()}`,
-      state: '',
-      latitude: detectedLat ?? undefined,
-      longitude: detectedLng ?? undefined,
-      maps_link: mapsLink || undefined,
-    };
+    const devicePushToken = (await getCachedPushToken()) || (user as any)?.expo_push_token || '';
 
-    const existingAddresses = user?.addresses || [];
-    const alreadyExists = existingAddresses.some(
-      a =>
-        a.line1?.trim().toLowerCase() === savedAddress.line1?.trim().toLowerCase() &&
-        (a.zip || '').trim() === (savedAddress.zip || '').trim()
-    );
-
-    if (!alreadyExists) {
-      const updatedAddresses = [savedAddress, ...existingAddresses];
-      try {
-        const { doc, setDoc } = require('firebase/firestore');
-        const { firestore } = require('../firebaseConfig');
-        await setDoc(doc(firestore, 'users', userDocId), { addresses: updatedAddresses }, { merge: true });
-      } catch (e) {}
-
-      if (user) {
-        setUser({ ...user, addresses: updatedAddresses });
-      }
-    }
-
-    const devicePushToken = (await getCachedPushToken()) || (user as any)?.expo_push_token || (user as any)?.fcm_token || '';
-
-    // Handle UPI payments: Show payment QR modal first without creating premature requests
+    // Handle UPI
     if (paymentMethod === 'upi') {
       setPendingUpiPayload({
         userId,
@@ -311,12 +293,6 @@ export default function BookingScreen({ route, navigation }: any) {
         receiverPhone: receiverPhone.trim(),
         slotId,
         deliveryAddress,
-        detectedLat,
-        detectedLng,
-        mapsLink,
-        deliveryDistanceKm,
-        price: Number(item.price || 199),
-        expoPushToken: devicePushToken,
       });
       setShowUpiModal(true);
       return;
@@ -324,265 +300,435 @@ export default function BookingScreen({ route, navigation }: any) {
 
     setSubmitting(true);
 
-    // Direct instant booking for Wallet & COD payments
-    const orderData: any = {
-      user_id: userId,
-      user_name: user?.name || 'AFoodoo Customer',
-      user_phone: user?.phone || '+91 98765 43210',
-      expo_push_token: devicePushToken,
-      fcm_token: devicePushToken,
-      menu_item_id: item.id,
-      menu_title: item.title,
-      meal_slot_id: slotId,
-      slot_name: activeSlot?.name || 'Lunch Tiffin',
-      delivery_window: activeSlot?.delivery_start_time && activeSlot?.delivery_end_time
-        ? `${activeSlot.delivery_start_time} – ${activeSlot.delivery_end_time}`
-        : activeSlot?.name?.toLowerCase().includes('dinner')
-        ? '7:30 PM – 8:30 PM'
-        : '1:00 PM – 2:00 PM',
-      delivery_start: activeSlot?.delivery_start_time || (activeSlot?.name?.toLowerCase().includes('dinner') ? '7:30 PM' : '1:00 PM'),
-      delivery_end: activeSlot?.delivery_end_time || (activeSlot?.name?.toLowerCase().includes('dinner') ? '8:30 PM' : '2:00 PM'),
-      status: 'booked',
-      delivery_address: deliveryAddress,
-      delivery_name: receiverName.trim(),
-      delivery_phone: receiverPhone.trim(),
-      payment_method: paymentMethod,
-      payment_status: paymentMethod === 'cod' ? 'pending' : 'paid',
-      otp_code: otpCode,
-      delivery_zone_id: 'zone_1',
-      zone_name: 'Central Zone',
-      tiffin_returned: false,
-      total_amount: Number(item.price || 199),
-      created_at: new Date().toISOString(),
-    };
-
-    // Only add GPS fields if available
-    if (detectedLat != null) orderData.delivery_lat = detectedLat;
-    if (detectedLng != null) orderData.delivery_lng = detectedLng;
-    if (mapsLink) orderData.maps_link = mapsLink;
-    if (deliveryDistanceKm != null) orderData.delivery_distance_km = deliveryDistanceKm;
-
     try {
-      // 1. Write order to Cloud Firestore
+      const orderCode = await getNextOrderCode();
+      const menuTitle =
+        checkoutItems.length > 1
+          ? checkoutItems.map(i => `${i.title} (${i.quantity})`).join(', ')
+          : checkoutItems[0]?.title || 'Tiffin Meal';
+      const menuItemId = checkoutItems[0]?.id || 'item_default';
+      const deliveryWindow = checkoutItems[0]?.delivery_window || '01:00 PM – 02:30 PM';
+
+      const orderData: any = {
+        order_code: orderCode,
+        user_id: userId,
+        user_name: user?.name || receiverName.trim(),
+        user_phone: user?.phone || receiverPhone.trim(),
+        expo_push_token: devicePushToken || null,
+        items: checkoutItems,
+        menu_item_id: menuItemId,
+        menu_title: menuTitle,
+        subtotal,
+        delivery_fee: finalDeliveryFee,
+        platform_fee: finalPlatformFee,
+        discount: couponDiscount,
+        total_amount: totalAmount,
+        price: totalAmount,
+        meal_slot_id: slotId,
+        slot_name: activeSlot?.name || 'Lunch special Meal booking',
+        delivery_window: deliveryWindow,
+        delivery_start: '01:00 PM',
+        delivery_end: '02:30 PM',
+        status: 'booked',
+        delivery_address: deliveryAddress,
+        delivery_name: receiverName.trim(),
+        delivery_phone: receiverPhone.trim(),
+        instructions: deliveryInstructions.trim(),
+        payment_method: paymentMethod,
+        payment_status: paymentMethod === 'cod' ? 'pending' : 'paid',
+        otp_code: otpCode,
+        rating: 0,
+        timestamp: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      if (detectedLat != null) orderData.delivery_lat = detectedLat;
+      if (detectedLng != null) orderData.delivery_lng = detectedLng;
+      if (detectedLat != null && detectedLng != null) {
+        orderData.maps_link = buildMapsLink(detectedLat, detectedLng);
+      }
+
+      // 1. Write order directly to Cloud Firestore
       const { collection, addDoc, doc, updateDoc, increment } = require('firebase/firestore');
       const { firestore } = require('../firebaseConfig');
       const docRef = await addDoc(collection(firestore, 'orders'), orderData);
       const realOrderId = docRef.id;
 
-      // 2. Increment quantity_booked on menu item
+      // 2. Increment quantity_booked on menu items (best-effort)
       try {
-        await updateDoc(doc(firestore, 'menu_items', item.id), {
-          quantity_booked: increment(1),
-        });
-      } catch (incErr) {}
+        for (const it of checkoutItems) {
+          if (it.id) {
+            await updateDoc(doc(firestore, 'menu_items', it.id), {
+              quantity_booked: increment(it.quantity || 1),
+            });
+          }
+        }
+      } catch (_) {}
 
-      // 3. Update local store menuItems
-      const store = useAppStore.getState();
-      const updatedMenuItems = store.menuItems.map(m =>
-        m.id === item.id ? { ...m, quantity_booked: (m.quantity_booked || 0) + 1 } : m
-      );
-      store.setMenuItems(updatedMenuItems);
-
-      // 4. Also attempt Express API backend POST
-      try {
-        await placeOrder({ userId, menuItemId: item.id, slotId, address: { label: 'Home', line1: addressLine1 } });
-      } catch (apiErr) {}
-
-      // 5. Deduct wallet balance if wallet payment
+      // 3. Deduct wallet balance only upon confirmed Firestore write!
       if (paymentMethod === 'wallet') {
-        deductWalletBalance(item.price, `${item.title} — Meal Booking 🍲`);
+        deductWalletBalance(totalAmount, `Order #${orderCode} Booking 🍲`);
       }
 
-      // 6. Update Zustand store orders
+      // 4. Update local Zustand store orders immediately
       const currentOrders = useAppStore.getState().orders;
       useAppStore.getState().setOrders([{ id: realOrderId, ...orderData }, ...currentOrders]);
 
+      clearCart();
       setSubmitting(false);
-      Alert.alert('Order Confirmed! 🎉', 'Your tiffin meal has been booked successfully.', [
-        {
-          text: 'Track Order',
-          onPress: () => navigation.replace('OrderTracking', { orderId: realOrderId }),
-        },
-      ]);
+
+      Alert.alert(
+        'Order Confirmed! 🎉',
+        `Your order #${orderCode} has been booked successfully and sent to kitchen.`,
+        [
+          {
+            text: 'Track Order',
+            onPress: () => navigation.replace('OrderTracking', { orderId: realOrderId }),
+          },
+        ]
+      );
     } catch (e: any) {
-      console.log('Firestore order write fallback:', e.message);
-
-      try {
-        const { doc, updateDoc, increment } = require('firebase/firestore');
-        const { firestore } = require('../firebaseConfig');
-        await updateDoc(doc(firestore, 'menu_items', item.id), { quantity_booked: increment(1) });
-      } catch (e) {}
-
-      const store = useAppStore.getState();
-      store.setMenuItems(store.menuItems.map(m =>
-        m.id === item.id ? { ...m, quantity_booked: (m.quantity_booked || 0) + 1 } : m
-      ));
-
-      if (paymentMethod === 'wallet') deductWalletBalance(item.price, `${item.title} — Meal Booking 🍲`);
       setSubmitting(false);
-      const demoOrderId = `ord_${Math.floor(100000 + Math.random() * 900000)}`;
-      Alert.alert('Order Confirmed! 🎉', 'Your tiffin meal has been booked.', [
-        {
-          text: 'Track Order',
-          onPress: () => navigation.replace('OrderTracking', { orderId: demoOrderId }),
-        },
-      ]);
+      console.log('Order creation error:', e?.message);
+      Alert.alert(
+        'Booking Failed',
+        `Could not confirm order: ${e?.message || 'Database error'}. No amount was deducted. Please try again.`
+      );
     }
   };
 
-  const inputStyle = [styles.input, { backgroundColor: theme.inputBg, borderColor: theme.inputBorder, color: theme.inputText }];
+  const inputStyle = [
+    styles.input,
+    {
+      backgroundColor: isDark ? 'rgba(255, 255, 255, 0.05)' : '#F9FAFB',
+      borderColor: isDark ? 'rgba(255, 255, 255, 0.12)' : '#E5E7EB',
+      color: theme.textPrimary,
+    },
+  ];
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
-      <ScrollView contentContainerStyle={styles.container}>
-        <Text style={[styles.pageTitle, { color: theme.textPrimary }]}>Review & Confirm Order</Text>
-
-        {/* Meal Item Summary Card */}
-        <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}>
-          <Text style={[styles.cardHeader, { color: theme.textPrimary }]}>Selected Meal</Text>
-          <View style={styles.itemRow}>
-            {item.image_url ? (
-              <Image source={{ uri: item.image_url }} style={styles.itemImage} />
-            ) : null}
-            <View style={styles.itemDetails}>
-              <Text style={[styles.itemTitle, { color: theme.textPrimary }]}>{item.title}</Text>
-              <Text style={[styles.itemPrice, { color: theme.primary }]}>₹{item.price.toFixed(0)}</Text>
-              <Text style={[styles.itemDelivery, { color: theme.textSecondary }]}>
-                🕒 Delivery Window: 1:00 PM – 2:00 PM
-              </Text>
+      <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
+        {/* Step Indicator matching reference: ❶ Details —— ② Payment —— ③ Confirmed */}
+        <View style={styles.stepperContainer}>
+          <View style={styles.stepItem}>
+            <View style={[styles.stepCircle, { backgroundColor: theme.primary, borderColor: theme.primary }]}>
+              <Text style={styles.stepCircleTextActive}>1</Text>
             </View>
+            <Text style={[styles.stepLabel, { color: theme.primary }]}>Details</Text>
           </View>
+
+          <View style={[styles.stepLine, { backgroundColor: isDark ? '#332722' : '#F0D5C7' }]} />
+
+          <View style={styles.stepItem}>
+            <View style={[styles.stepCircle, { backgroundColor: isDark ? '#261D19' : '#F4F4F5', borderColor: isDark ? '#3D2F28' : '#E4E4E7' }]}>
+              <Text style={[styles.stepCircleText, { color: theme.textMuted }]}>2</Text>
+            </View>
+            <Text style={[styles.stepLabel, { color: theme.textMuted }]}>Payment</Text>
+          </View>
+
+          <View style={[styles.stepLine, { backgroundColor: isDark ? '#332722' : '#F0D5C7' }]} />
+
+          <View style={styles.stepItem}>
+            <View style={[styles.stepCircle, { backgroundColor: isDark ? '#261D19' : '#F4F4F5', borderColor: isDark ? '#3D2F28' : '#E4E4E7' }]}>
+              <Text style={[styles.stepCircleText, { color: theme.textMuted }]}>3</Text>
+            </View>
+            <Text style={[styles.stepLabel, { color: theme.textMuted }]}>Confirmed</Text>
+          </View>
+        </View>
+
+        {/* Selected Meal(s) Card */}
+        <View
+          style={[
+            styles.card,
+            {
+              backgroundColor: isDark ? '#1C1512' : '#FFFFFF',
+              borderColor: isDark ? 'rgba(255, 107, 0, 0.18)' : '#F3E8E2',
+            },
+          ]}
+        >
+          <Text style={[styles.cardHeader, { color: theme.textPrimary }]}>
+            Selected {checkoutItems.length > 1 ? `Meals (${checkoutItems.length})` : 'Meal'}
+          </Text>
+
+          {checkoutItems.length === 0 ? (
+            <View style={styles.emptyCartBox}>
+              <Text style={{ fontSize: 32, marginBottom: 8 }}>🛒</Text>
+              <Text style={[styles.emptyCartText, { color: theme.textPrimary }]}>
+                Your cart is currently empty
+              </Text>
+              <TouchableOpacity
+                style={[styles.browseMenuBtn, { backgroundColor: theme.primary }]}
+                onPress={() => navigation.navigate('Menu')}
+              >
+                <Text style={styles.browseMenuBtnText}>Browse Today's Menu</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            checkoutItems.map((cItem, idx) => (
+              <View
+                key={cItem.id || `item_${idx}`}
+                style={[
+                  styles.itemRow,
+                  idx < checkoutItems.length - 1 && {
+                    borderBottomWidth: 1,
+                    borderBottomColor: isDark ? '#2A1F1B' : '#F3F4F6',
+                    paddingBottom: 14,
+                    marginBottom: 14,
+                  },
+                ]}
+              >
+                <Image
+                  source={{
+                    uri:
+                      cItem.image_url ||
+                      'https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?auto=format&fit=crop&w=600&q=80',
+                  }}
+                  style={styles.itemImage}
+                  resizeMode="cover"
+                />
+                <View style={styles.itemDetails}>
+                  <Text style={[styles.itemTitle, { color: theme.textPrimary }]}>
+                    {cItem.title}
+                  </Text>
+                  <Text style={[styles.itemPrice, { color: theme.primary }]}>
+                    ₹{cItem.price.toFixed(0)}
+                  </Text>
+                  <View style={styles.windowRow}>
+                    <Text style={[styles.itemDelivery, { color: theme.textSecondary }]}>
+                      🕒 Delivery Window: {cItem.delivery_window || '1:00 PM – 2:00 PM'}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Inline Stepper to modify quantity in cart */}
+                <View
+                  style={[
+                    styles.inlineStepper,
+                    {
+                      backgroundColor: isDark ? 'rgba(255, 255, 255, 0.06)' : '#FFF3ED',
+                      borderColor: isDark ? 'rgba(255, 255, 255, 0.12)' : '#FFD9C6',
+                    },
+                  ]}
+                >
+                  <TouchableOpacity
+                    onPress={() => removeFromCart(cItem.id)}
+                    style={styles.inlineStepperBtn}
+                  >
+                    <Text style={[styles.inlineStepperBtnText, { color: theme.primary }]}>−</Text>
+                  </TouchableOpacity>
+                  <Text style={[styles.inlineStepperVal, { color: theme.textPrimary }]}>
+                    {cItem.quantity}
+                  </Text>
+                  <TouchableOpacity
+                    onPress={() => addToCart(cItem as any, activeSlot)}
+                    style={styles.inlineStepperBtn}
+                  >
+                    <Text style={[styles.inlineStepperBtnText, { color: theme.primary }]}>+</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ))
+          )}
         </View>
 
         {/* Delivery Details Card */}
-        <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}>
-          <Text style={[styles.cardHeader, { color: theme.textPrimary }]}>Delivery Details 📍</Text>
-
-          {/* GPS Button */}
-          <TouchableOpacity
-            style={[styles.gpsButton, { backgroundColor: '#1565C0' }]}
-            onPress={handleDetectLocation}
-            disabled={locating}
-          >
-            {locating ? (
-              <ActivityIndicator color="#FFF" size="small" />
-            ) : (
-              <Text style={styles.gpsButtonText}>📍 Use My Current Location (Auto-Fill)</Text>
-            )}
-          </TouchableOpacity>
-
-          {detectedLat != null && (
-            <Text style={[styles.gpsHint, { color: theme.textMuted }]}>
-              ✓ GPS captured: {detectedLat.toFixed(4)}, {detectedLng?.toFixed(4)}
-            </Text>
-          )}
-
-          <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Recipient Name *</Text>
-          <TextInput
-            style={inputStyle}
-            value={receiverName}
-            onChangeText={setReceiverName}
-            placeholder="Full name of person receiving delivery"
-            placeholderTextColor={theme.textMuted}
-          />
-
-          <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Contact Number *</Text>
-          <TextInput
-            style={inputStyle}
-            value={receiverPhone}
-            onChangeText={setReceiverPhone}
-            placeholder="+91 98765 43210"
-            placeholderTextColor={theme.textMuted}
-            keyboardType="phone-pad"
-          />
-
-          <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Flat / House No., Building, Street *</Text>
-          <TextInput
-            style={inputStyle}
-            value={addressLine1}
-            onChangeText={setAddressLine1}
-            placeholder="e.g. Flat 402, Green Park Residency, MG Road"
-            placeholderTextColor={theme.textMuted}
-            multiline
-          />
-
-          <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Landmark (Optional)</Text>
-          <TextInput
-            style={inputStyle}
-            value={landmark}
-            onChangeText={setLandmark}
-            placeholder="e.g. Near D-Mart, Opposite HDFC Bank"
-            placeholderTextColor={theme.textMuted}
-          />
-
-          <View style={styles.rowFields}>
-            <View style={{ flex: 1, marginRight: 8 }}>
-              <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>City *</Text>
-              <TextInput
-                style={inputStyle}
-                value={city}
-                onChangeText={setCity}
-                placeholder="Mumbai"
-                placeholderTextColor={theme.textMuted}
-              />
+        <View
+          style={[
+            styles.card,
+            {
+              backgroundColor: isDark ? '#1C1512' : '#FFFFFF',
+              borderColor: isDark ? 'rgba(255, 107, 0, 0.18)' : '#F3E8E2',
+            },
+          ]}
+        >
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <Text style={{ fontSize: 16, marginRight: 6 }}>📍</Text>
+              <Text style={[styles.cardHeader, { color: theme.textPrimary, marginBottom: 0 }]}>
+                Delivery Details
+              </Text>
             </View>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>PIN Code</Text>
-              <TextInput
-                style={inputStyle}
-                value={pincode}
-                onChangeText={setPincode}
-                placeholder="400001"
-                placeholderTextColor={theme.textMuted}
-                keyboardType="numeric"
-                maxLength={6}
-              />
-            </View>
+            <TouchableOpacity onPress={() => setIsEditingAddress(!isEditingAddress)}>
+              <Text style={[styles.changeLink, { color: theme.primary }]}>
+                {isEditingAddress ? 'Done' : 'Change'}
+              </Text>
+            </TouchableOpacity>
           </View>
+
+          {isEditingAddress ? (
+            <View style={{ marginTop: 4 }}>
+              <TouchableOpacity
+                style={[styles.gpsButton, { backgroundColor: '#1565C0' }]}
+                onPress={handleDetectLocation}
+                disabled={locating}
+              >
+                {locating ? (
+                  <ActivityIndicator color="#FFF" size="small" />
+                ) : (
+                  <Text style={styles.gpsButtonText}>📍 Detect My Location (GPS Auto-Fill)</Text>
+                )}
+              </TouchableOpacity>
+
+              <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Recipient Name</Text>
+              <TextInput
+                style={inputStyle}
+                value={receiverName}
+                onChangeText={setReceiverName}
+                placeholder="Full name"
+                placeholderTextColor={theme.textMuted}
+              />
+
+              <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Phone Number</Text>
+              <TextInput
+                style={inputStyle}
+                value={receiverPhone}
+                onChangeText={setReceiverPhone}
+                placeholder="+91..."
+                keyboardType="phone-pad"
+                placeholderTextColor={theme.textMuted}
+              />
+
+              <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Address Line</Text>
+              <TextInput
+                style={inputStyle}
+                value={addressLine1}
+                onChangeText={setAddressLine1}
+                placeholder="House / Flat / Street"
+                placeholderTextColor={theme.textMuted}
+              />
+
+              <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Landmark</Text>
+              <TextInput
+                style={inputStyle}
+                value={landmark}
+                onChangeText={setLandmark}
+                placeholder="Near landmark..."
+                placeholderTextColor={theme.textMuted}
+              />
+            </View>
+          ) : (
+            <View
+              style={[
+                styles.addressPreviewBox,
+                {
+                  backgroundColor: isDark ? 'rgba(255, 255, 255, 0.03)' : '#F9FAFB',
+                  borderColor: isDark ? '#2D231E' : '#E5E7EB',
+                },
+              ]}
+            >
+              <Text style={[styles.addrName, { color: theme.textPrimary }]}>
+                👤 {receiverName} ({receiverPhone})
+              </Text>
+              <Text style={[styles.addrLine, { color: theme.textSecondary }]}>
+                {addressLine1}, {pincode}
+              </Text>
+              {landmark ? (
+                <Text style={[styles.addrLandmark, { color: theme.textMuted }]}>
+                  Landmark: {landmark}
+                </Text>
+              ) : null}
+            </View>
+          )}
         </View>
 
-        {/* Payment Method Card */}
-        <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}>
-          <Text style={[styles.cardHeader, { color: theme.textPrimary }]}>Payment Option</Text>
+        {/* Delivery Instructions (Optional) Card */}
+        <View
+          style={[
+            styles.card,
+            {
+              backgroundColor: isDark ? '#1C1512' : '#FFFFFF',
+              borderColor: isDark ? 'rgba(255, 107, 0, 0.18)' : '#F3E8E2',
+            },
+          ]}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
+            <Text style={{ fontSize: 16, marginRight: 6 }}>📝</Text>
+            <Text style={[styles.cardHeader, { color: theme.textPrimary, marginBottom: 0 }]}>
+              Delivery Instructions (Optional)
+            </Text>
+          </View>
 
-          {/* 1. Direct UPI Option */}
+          <TextInput
+            style={[inputStyle, { minHeight: 46 }]}
+            value={deliveryInstructions}
+            onChangeText={setDeliveryInstructions}
+            placeholder="e.g. Leave at door, call on arrival, ring bell..."
+            placeholderTextColor={theme.textMuted}
+          />
+        </View>
+
+        {/* Apply Coupon Card */}
+        <View
+          style={[
+            styles.card,
+            {
+              backgroundColor: isDark ? '#1C1512' : '#FFFFFF',
+              borderColor: isDark ? 'rgba(255, 107, 0, 0.18)' : '#F3E8E2',
+            },
+          ]}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
+            <Text style={{ fontSize: 16, marginRight: 6 }}>🏷️</Text>
+            <Text style={[styles.cardHeader, { color: theme.textPrimary, marginBottom: 0 }]}>
+              Apply Coupon
+            </Text>
+          </View>
+
+          <View style={styles.couponRow}>
+            <TextInput
+              style={[inputStyle, { flex: 1, marginBottom: 0, textTransform: 'uppercase' }]}
+              value={couponCode}
+              onChangeText={setCouponCode}
+              placeholder="Enter coupon code"
+              placeholderTextColor={theme.textMuted}
+              autoCapitalize="characters"
+            />
+            <TouchableOpacity
+              style={[
+                styles.applyCouponBtn,
+                { backgroundColor: couponApplied ? '#10B981' : theme.primary },
+              ]}
+              onPress={handleApplyCoupon}
+            >
+              <Text style={styles.applyCouponBtnText}>
+                {couponApplied ? 'Applied ✓' : 'Apply'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {couponMsg ? (
+            <Text
+              style={[
+                styles.couponMsg,
+                { color: couponApplied ? '#10B981' : '#EF4444' },
+              ]}
+            >
+              {couponMsg}
+            </Text>
+          ) : null}
+        </View>
+
+        {/* Payment Method Selector */}
+        <View
+          style={[
+            styles.card,
+            {
+              backgroundColor: isDark ? '#1C1512' : '#FFFFFF',
+              borderColor: isDark ? 'rgba(255, 107, 0, 0.18)' : '#F3E8E2',
+            },
+          ]}
+        >
+          <Text style={[styles.cardHeader, { color: theme.textPrimary }]}>Select Payment Option</Text>
+
+          {/* 1. Wallet Option */}
           <TouchableOpacity
             style={[
               styles.paymentOption,
               {
-                backgroundColor: paymentMethod === 'upi' ? theme.primaryLight : theme.inputBg,
-                borderColor: paymentMethod === 'upi' ? theme.primary : theme.inputBorder,
-              },
-            ]}
-            onPress={() => setPaymentMethod('upi')}
-          >
-            <View style={styles.radioRow}>
-              <Text style={styles.optionEmoji}>📱</Text>
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.optionTitle, { color: theme.textPrimary }]}>
-                  Direct UPI (GPay / PhonePe / Paytm / BHIM)
-                </Text>
-                <Text style={[styles.optionSub, { color: theme.textSecondary }]}>
-                  Instant 1-tap app payment ({upiId})
-                </Text>
-              </View>
-              <View
-                style={[
-                  styles.radioCircle,
-                  { borderColor: paymentMethod === 'upi' ? theme.primary : theme.textMuted },
-                  paymentMethod === 'upi' && { backgroundColor: theme.primary },
-                ]}
-              />
-            </View>
-          </TouchableOpacity>
-
-          {/* 2. Wallet Option */}
-          <TouchableOpacity
-            style={[
-              styles.paymentOption,
-              {
-                backgroundColor: paymentMethod === 'wallet' ? theme.primaryLight : theme.inputBg,
-                borderColor: paymentMethod === 'wallet' ? theme.primary : theme.inputBorder,
+                backgroundColor: paymentMethod === 'wallet' ? (isDark ? 'rgba(255, 107, 0, 0.15)' : '#FFF0E6') : (isDark ? '#261D1A' : '#F9FAFB'),
+                borderColor: paymentMethod === 'wallet' ? theme.primary : (isDark ? '#3D2F28' : '#E5E7EB'),
               },
             ]}
             onPress={() => setPaymentMethod('wallet')}
@@ -591,10 +737,10 @@ export default function BookingScreen({ route, navigation }: any) {
               <Text style={styles.optionEmoji}>👛</Text>
               <View style={{ flex: 1 }}>
                 <Text style={[styles.optionTitle, { color: theme.textPrimary }]}>
-                  AFoodoo Wallet Balance
+                  AFoodoo Wallet (Available: ₹{walletBalance.toFixed(0)})
                 </Text>
-                <Text style={[styles.optionSub, { color: theme.textSecondary }]}>
-                  Available Balance: ₹{walletBalance.toFixed(0)}
+                <Text style={[styles.optionSub, { color: isWalletSufficient ? '#10B981' : '#EF4444' }]}>
+                  {isWalletSufficient ? 'Instant 1-tap booking' : 'Low balance for this order'}
                 </Text>
               </View>
               <View
@@ -607,14 +753,45 @@ export default function BookingScreen({ route, navigation }: any) {
             </View>
           </TouchableOpacity>
 
-          {/* 3. Cash on Delivery Option */}
+          {/* 2. Direct UPI */}
+          <TouchableOpacity
+            style={[
+              styles.paymentOption,
+              {
+                backgroundColor: paymentMethod === 'upi' ? (isDark ? 'rgba(255, 107, 0, 0.15)' : '#FFF0E6') : (isDark ? '#261D1A' : '#F9FAFB'),
+                borderColor: paymentMethod === 'upi' ? theme.primary : (isDark ? '#3D2F28' : '#E5E7EB'),
+              },
+            ]}
+            onPress={() => setPaymentMethod('upi')}
+          >
+            <View style={styles.radioRow}>
+              <Text style={styles.optionEmoji}>📱</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.optionTitle, { color: theme.textPrimary }]}>
+                  Direct UPI & QR Code (0% Fee)
+                </Text>
+                <Text style={[styles.optionSub, { color: theme.textSecondary }]}>
+                  GPay / PhonePe / Paytm ({upiId})
+                </Text>
+              </View>
+              <View
+                style={[
+                  styles.radioCircle,
+                  { borderColor: paymentMethod === 'upi' ? theme.primary : theme.textMuted },
+                  paymentMethod === 'upi' && { backgroundColor: theme.primary },
+                ]}
+              />
+            </View>
+          </TouchableOpacity>
+
+          {/* 3. Cash on Delivery */}
           {enableCod && (
             <TouchableOpacity
               style={[
                 styles.paymentOption,
                 {
-                  backgroundColor: paymentMethod === 'cod' ? theme.primaryLight : theme.inputBg,
-                  borderColor: paymentMethod === 'cod' ? theme.primary : theme.inputBorder,
+                  backgroundColor: paymentMethod === 'cod' ? (isDark ? 'rgba(255, 107, 0, 0.15)' : '#FFF0E6') : (isDark ? '#261D1A' : '#F9FAFB'),
+                  borderColor: paymentMethod === 'cod' ? theme.primary : (isDark ? '#3D2F28' : '#E5E7EB'),
                 },
               ]}
               onPress={() => setPaymentMethod('cod')}
@@ -623,10 +800,10 @@ export default function BookingScreen({ route, navigation }: any) {
                 <Text style={styles.optionEmoji}>💵</Text>
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.optionTitle, { color: theme.textPrimary }]}>
-                    Cash on Delivery / Pay at Kitchen
+                    Cash on Delivery
                   </Text>
                   <Text style={[styles.optionSub, { color: theme.textSecondary }]}>
-                    Pay cash when your tiffin is delivered
+                    Pay cash upon delivery
                   </Text>
                 </View>
                 <View
@@ -641,46 +818,97 @@ export default function BookingScreen({ route, navigation }: any) {
           )}
         </View>
 
-        {/* Bill Summary */}
-        <View style={[styles.billCard, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}>
-          <View style={styles.billRow}>
-            <Text style={[styles.billLabel, { color: theme.textSecondary }]}>Item Subtotal</Text>
-            <Text style={[styles.billValue, { color: theme.textPrimary }]}>₹{item.price.toFixed(0)}</Text>
+        {/* Order Summary Card matching reference */}
+        <View
+          style={[
+            styles.card,
+            {
+              backgroundColor: isDark ? '#1C1512' : '#FFFFFF',
+              borderColor: isDark ? 'rgba(255, 107, 0, 0.18)' : '#F3E8E2',
+            },
+          ]}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 14 }}>
+            <Text style={{ fontSize: 16, marginRight: 6 }}>🧾</Text>
+            <Text style={[styles.cardHeader, { color: theme.textPrimary, marginBottom: 0 }]}>
+              Order Summary
+            </Text>
           </View>
-          <View style={styles.billRow}>
-            <Text style={[styles.billLabel, { color: theme.textSecondary }]}>Delivery Fee</Text>
-            <Text style={[styles.billValue, { color: theme.statusSuccessText }]}>FREE</Text>
+
+          {checkoutItems.map((c, i) => (
+            <View key={c.id || i} style={styles.summaryRow}>
+              <Text style={[styles.summaryLabel, { color: theme.textPrimary }]}>
+                {c.title} ({c.quantity})
+              </Text>
+              <Text style={[styles.summaryVal, { color: theme.textPrimary }]}>
+                ₹{(c.price * c.quantity).toFixed(0)}
+              </Text>
+            </View>
+          ))}
+
+          {/* Delivery Fee managed dynamically by Admin Panel */}
+          <View style={styles.summaryRow}>
+            <Text style={[styles.summaryLabel, { color: theme.textSecondary }]}>Delivery Fee</Text>
+            <Text
+              style={[
+                styles.summaryVal,
+                { color: finalDeliveryFee === 0 ? '#10B981' : theme.textPrimary },
+              ]}
+            >
+              {finalDeliveryFee === 0 ? 'FREE' : `₹${finalDeliveryFee}`}
+            </Text>
           </View>
-          <View style={[styles.billDivider, { backgroundColor: theme.surfaceBorder }]} />
-          <View style={styles.billRow}>
-            <Text style={[styles.totalLabel, { color: theme.textPrimary }]}>Total Payable</Text>
-            <Text style={[styles.totalValue, { color: theme.primary }]}>₹{item.price.toFixed(0)}</Text>
+
+          {/* Platform Fee managed dynamically by Admin Panel */}
+          <View style={styles.summaryRow}>
+            <Text style={[styles.summaryLabel, { color: theme.textSecondary }]}>Platform Fee</Text>
+            <Text style={[styles.summaryVal, { color: theme.textPrimary }]}>
+              ₹{finalPlatformFee}
+            </Text>
+          </View>
+
+          {couponDiscount > 0 && (
+            <View style={styles.summaryRow}>
+              <Text style={[styles.summaryLabel, { color: '#10B981' }]}>Coupon Discount</Text>
+              <Text style={[styles.summaryVal, { color: '#10B981' }]}>
+                −₹{couponDiscount}
+              </Text>
+            </View>
+          )}
+
+          <View style={[styles.summaryDivider, { backgroundColor: isDark ? '#2D231E' : '#F3F4F6' }]} />
+
+          <View style={styles.summaryRow}>
+            <Text style={[styles.totalLabel, { color: theme.textPrimary }]}>Total Amount</Text>
+            <Text style={[styles.totalAmount, { color: theme.primary }]}>
+              ₹{totalAmount.toFixed(0)}
+            </Text>
           </View>
         </View>
 
+        {/* Bottom CTA Button: Proceed to Payment → */}
         <TouchableOpacity
-          style={[styles.confirmButton, { backgroundColor: theme.primary }]}
-          onPress={handleConfirmOrder}
-          disabled={submitting}
+          style={[styles.proceedButton, { backgroundColor: theme.primary }]}
+          onPress={handleProceedToPayment}
+          disabled={submitting || checkoutItems.length === 0}
+          activeOpacity={0.85}
         >
           {submitting ? (
             <ActivityIndicator color="#FFF" />
           ) : (
-            <Text style={[styles.confirmButtonText, { color: theme.buttonText }]}>
-              Place Order (₹{item.price.toFixed(0)})
-            </Text>
+            <Text style={styles.proceedButtonText}>Proceed to Payment →</Text>
           )}
         </TouchableOpacity>
       </ScrollView>
 
-      {/* Zero-fee Direct UPI & QR Code Payment Modal */}
+      {/* Zero-fee Direct UPI Modal */}
       <UpiPaymentModal
         visible={showUpiModal}
-        amount={Number(item.price || 199)}
+        amount={totalAmount}
         upiId={upiId}
         merchantName={merchantName}
         customQrUrl={customQrUrl}
-        note={`AFoodoo Order — ${item.title}`}
+        note={`AFoodoo Order ₹${totalAmount}`}
         submitting={submitting}
         onClose={() => setShowUpiModal(false)}
         onConfirmPaid={handleConfirmUpiPayment}
@@ -691,83 +919,277 @@ export default function BookingScreen({ route, navigation }: any) {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
-  container: { padding: 20 },
-  pageTitle: { fontSize: 22, fontWeight: '800', marginBottom: 16 },
-  card: {
-    borderRadius: 16,
+  container: {
     padding: 16,
-    marginBottom: 16,
-    borderWidth: 1,
+    paddingBottom: 40,
   },
-  cardHeader: { fontSize: 15, fontWeight: '700', marginBottom: 12 },
-  itemRow: { flexDirection: 'row', alignItems: 'center' },
-  itemImage: { width: 70, height: 70, borderRadius: 10, marginRight: 12 },
-  itemDetails: { flex: 1 },
-  itemTitle: { fontSize: 16, fontWeight: '700' },
-  itemPrice: { fontSize: 16, fontWeight: '800', marginVertical: 2 },
-  itemDelivery: { fontSize: 12 },
-  gpsButton: {
-    borderRadius: 10,
-    paddingVertical: 11,
-    paddingHorizontal: 14,
+  stepperContainer: {
+    flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 8,
-    minHeight: 44,
     justifyContent: 'center',
-  },
-  gpsButtonText: { color: '#FFF', fontWeight: '700', fontSize: 14 },
-  gpsHint: { fontSize: 11, marginBottom: 10, textAlign: 'center' },
-  fieldLabel: { fontSize: 12, fontWeight: '600', marginBottom: 4, marginTop: 10 },
-  input: {
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 14,
-    minHeight: 44,
-  },
-  rowFields: { flexDirection: 'row', marginTop: 0 },
-  paymentOption: {
-    borderWidth: 1.5,
-    borderRadius: 12,
-    padding: 12,
+    paddingVertical: 14,
     marginBottom: 10,
-    minHeight: 52,
-    justifyContent: 'center',
   },
-  radioRow: { flexDirection: 'row', alignItems: 'center' },
-  optionEmoji: { fontSize: 22, marginRight: 10 },
-  optionTitle: { fontSize: 14, fontWeight: '700' },
-  optionSub: { fontSize: 12, marginTop: 2 },
-  radioCircle: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    borderWidth: 2,
-  },
-  billCard: {
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 20,
-    borderWidth: 1,
-  },
-  billRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
-  billLabel: { fontSize: 13 },
-  billValue: { fontSize: 13, fontWeight: '600' },
-  billDivider: { height: 1, marginVertical: 8 },
-  totalLabel: { fontSize: 15, fontWeight: '800' },
-  totalValue: { fontSize: 18, fontWeight: '800' },
-  confirmButton: {
-    paddingVertical: 16,
-    borderRadius: 14,
+  stepItem: {
     alignItems: 'center',
+  },
+  stepCircle: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
+  stepCircleTextActive: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  stepCircleText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  stepLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  stepLine: {
+    width: 44,
+    height: 2,
+    marginHorizontal: 8,
+    marginBottom: 14,
+  },
+  card: {
+    borderRadius: 18,
+    padding: 16,
+    marginBottom: 14,
+    borderWidth: 1,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.2,
-    shadowRadius: 6,
-    elevation: 3,
-    minHeight: 52,
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  cardHeader: {
+    fontSize: 15,
+    fontWeight: '800',
+    marginBottom: 12,
+  },
+  emptyCartBox: {
+    alignItems: 'center',
+    paddingVertical: 20,
+  },
+  emptyCartText: {
+    fontSize: 14,
+    fontWeight: '700',
+    marginBottom: 12,
+  },
+  browseMenuBtn: {
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 12,
+  },
+  browseMenuBtnText: {
+    color: '#FFF',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  itemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  itemImage: {
+    width: 60,
+    height: 60,
+    borderRadius: 12,
+    marginRight: 12,
+  },
+  itemDetails: {
+    flex: 1,
+    marginRight: 8,
+  },
+  itemTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  itemPrice: {
+    fontSize: 14,
+    fontWeight: '800',
+    marginVertical: 2,
+  },
+  windowRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  itemDelivery: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  inlineStepper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+  },
+  inlineStepperBtn: {
+    width: 24,
+    height: 24,
+    alignItems: 'center',
     justifyContent: 'center',
   },
-  confirmButtonText: { fontSize: 16, fontWeight: '700' },
+  inlineStepperBtnText: {
+    fontSize: 16,
+    fontWeight: '900',
+  },
+  inlineStepperVal: {
+    fontSize: 13,
+    fontWeight: '800',
+    paddingHorizontal: 6,
+  },
+  changeLink: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  addressPreviewBox: {
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  addrName: {
+    fontSize: 13,
+    fontWeight: '800',
+    marginBottom: 3,
+  },
+  addrLine: {
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  addrLandmark: {
+    fontSize: 11,
+    marginTop: 3,
+  },
+  gpsButton: {
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  gpsButtonText: {
+    color: '#FFF',
+    fontWeight: '700',
+    fontSize: 12,
+  },
+  fieldLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    marginBottom: 4,
+    marginTop: 8,
+  },
+  input: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  couponRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  applyCouponBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  applyCouponBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  couponMsg: {
+    fontSize: 11,
+    fontWeight: '700',
+    marginTop: 6,
+  },
+  paymentOption: {
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 12,
+    marginBottom: 8,
+  },
+  radioRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  optionEmoji: {
+    fontSize: 18,
+    marginRight: 10,
+  },
+  optionTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  optionSub: {
+    fontSize: 11,
+    marginTop: 2,
+  },
+  radioCircle: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 2,
+    marginLeft: 8,
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  summaryLabel: {
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  summaryVal: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  summaryDivider: {
+    height: 1,
+    marginVertical: 10,
+  },
+  totalLabel: {
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  totalAmount: {
+    fontSize: 22,
+    fontWeight: '900',
+  },
+  proceedButton: {
+    marginTop: 6,
+    paddingVertical: 15,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#FF6B00',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  proceedButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '900',
+    letterSpacing: 0.3,
+  },
 });

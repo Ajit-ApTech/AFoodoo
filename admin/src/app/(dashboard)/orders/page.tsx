@@ -72,6 +72,7 @@ export default function OrderQueuePage() {
   const handleAdvanceStatus = async (orderId: string, nextStatus: OrderStatus) => {
     try {
       const targetOrder = orders.find(o => o.id === orderId);
+      const displayCode = targetOrder?.order_code || (orderId ? orderId.slice(-6).toUpperCase() : 'ORD');
 
       await updateDoc(doc(db, 'orders', orderId), {
         status: nextStatus,
@@ -80,7 +81,7 @@ export default function OrderQueuePage() {
       await addDoc(collection(db, 'audit_logs'), {
         action_type: 'ORDER_STATUS_UPDATED',
         admin_email: 'admin@afoodoo.com',
-        details: `Advanced order #${orderId.slice(-6)} status to "${nextStatus}"`,
+        details: `Advanced order #${displayCode} status to "${nextStatus}"`,
         timestamp: new Date().toISOString(),
       });
 
@@ -118,21 +119,36 @@ export default function OrderQueuePage() {
           } catch (altErr) {}
         }
 
+        let pushTitle = '🍲 AFoodoo Order Update';
+        let pushBody = `Your order #${displayCode} status is now ${nextStatus}.`;
+
+        if (nextStatus === 'preparing') {
+          pushTitle = '👨‍🍳 Kitchen Preparing';
+          pushBody = `Your meal "${targetOrder.menu_title || 'Tiffin'}" is now being freshly prepared in our kitchen!`;
+        } else if (nextStatus === 'out_for_delivery') {
+          pushTitle = '🚚 Out for Delivery';
+          pushBody = `Your tiffin is on the way! Rider OTP Code: ${targetOrder.otp_code || ''}`;
+        } else if (nextStatus === 'delivered') {
+          pushTitle = '😋 Meal Delivered';
+          pushBody = `Your tiffin meal "${targetOrder.menu_title || ''}" has been delivered! Enjoy your hot meal.`;
+        }
+
+        // Store notification record in Firestore customer_notifications for mobile app notification bell
+        try {
+          await addDoc(collection(db, 'customer_notifications'), {
+            user_id: userDocId,
+            user_phone: userPhoneDigits,
+            order_id: orderId,
+            title: pushTitle,
+            body: pushBody,
+            status: nextStatus,
+            timestamp: new Date().toISOString(),
+          });
+        } catch (nErr) {
+          console.error('Error recording customer notification in Firestore:', nErr);
+        }
+
         if (fcmToken) {
-          let pushTitle = '🍲 AFoodoo Order Update';
-          let pushBody = `Your order #${orderId.slice(-6)} status is now ${nextStatus}.`;
-
-          if (nextStatus === 'preparing') {
-            pushTitle = '👨‍🍳 Kitchen Preparing';
-            pushBody = `Your meal "${targetOrder.menu_title || 'Tiffin'}" is now being freshly prepared in our kitchen!`;
-          } else if (nextStatus === 'out_for_delivery') {
-            pushTitle = '🚚 Out for Delivery';
-            pushBody = `Your tiffin is on the way! Rider OTP Code: ${targetOrder.otp_code || ''}`;
-          } else if (nextStatus === 'delivered') {
-            pushTitle = '😋 Meal Delivered';
-            pushBody = `Your tiffin meal "${targetOrder.menu_title || ''}" has been delivered! Enjoy your hot meal.`;
-          }
-
           sendExpoPushNotification([fcmToken], pushTitle, pushBody, {
             orderId: orderId,
             status: nextStatus,
@@ -379,11 +395,30 @@ export default function OrderQueuePage() {
                 {/* Header */}
                 <div className="flex items-center justify-between border-b border-slate-800 pb-3">
                   <div>
-                    <h3 className="font-extrabold text-slate-100 text-base">#{order.id.slice(-8)}</h3>
+                    <h3 className="font-extrabold text-slate-100 text-base">#{order.order_code || (order.id ? order.id.slice(-6).toUpperCase() : 'ORD')}</h3>
                     <p className="text-xs text-orange-400 font-bold">{order.menu_title || 'Tiffin Meal'}</p>
                   </div>
                   {getStatusBadge(order.status)}
                 </div>
+
+                {/* Multi-Item Cart Breakdown (if present) */}
+                {Array.isArray(order.items) && order.items.length > 0 && (
+                  <div className="bg-slate-950/70 p-2.5 rounded-xl border border-slate-800 text-[11px] space-y-1">
+                    <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider block">Items Ordered</span>
+                    {order.items.map((it: any, i: number) => (
+                      <div key={i} className="flex justify-between items-center text-slate-300">
+                        <span>{it.title} <span className="text-orange-400 font-bold">× {it.quantity}</span></span>
+                        <span className="font-mono text-slate-400 font-semibold">₹{(it.price * it.quantity).toFixed(0)}</span>
+                      </div>
+                    ))}
+                    {(order.delivery_fee != null || order.platform_fee != null) && (
+                      <div className="border-t border-slate-800/80 pt-1 mt-1 flex justify-between text-[10px] text-slate-500">
+                        <span>Fees (Del: ₹{order.delivery_fee ?? 0}, Plat: ₹{order.platform_fee ?? 0})</span>
+                        <span className="text-slate-400 font-mono font-bold">Total: ₹{order.total_amount ?? order.price}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Customer Star Rating (if rated by customer) */}
                 {order.rating && (

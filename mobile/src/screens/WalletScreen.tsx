@@ -18,8 +18,9 @@ import { generateUpiUrl } from '../utils/upi';
 import { submitPaymentRequest } from '../api/payments';
 import { UtrModal } from '../components/UtrModal';
 import { UpiPaymentModal } from '../components/UpiPaymentModal';
+import { BottomNavBar, BottomTabType } from '../components/BottomNavBar';
 
-export default function WalletScreen() {
+export default function WalletScreen({ navigation }: any) {
   const { theme } = useTheme();
   const user = useAppStore(state => state.user);
   const setUser = useAppStore(state => state.setUser);
@@ -472,6 +473,16 @@ export default function WalletScreen() {
           setActiveTopUpAmount(null);
         }}
         onConfirmPaid={handleConfirmTopUp}
+      />
+
+      <BottomNavBar
+        currentTab="Wallet"
+        onSelectTab={(tab: BottomTabType) => {
+          if (tab === 'Wallet') return;
+          if (tab === 'Home') navigation.navigate('Home');
+          else if (tab === 'Orders') navigation.navigate('OrderTracking');
+          else if (tab === 'Account') navigation.navigate('Profile');
+        }}
       />
     </SafeAreaView>
   );

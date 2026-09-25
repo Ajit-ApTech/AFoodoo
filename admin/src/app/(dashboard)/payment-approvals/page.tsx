@@ -13,6 +13,7 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 import { db } from '../../../lib/firebase';
+import { getNextOrderCode } from '../../../lib/orderCode';
 import { PaymentRequest } from '../../../types';
 import { sendExpoPushNotification } from '../../../lib/pushService';
 import {
@@ -98,19 +99,38 @@ export default function PaymentApprovalsPage() {
       if (req.type === 'order' && req.order_payload) {
         const p = req.order_payload;
         const otpCode = Math.floor(1000 + Math.random() * 9000).toString();
+        const orderCode = p.order_code || (await getNextOrderCode(db));
+
+        // Format items and title cleanly
+        const rawItems = Array.isArray(p.items) && p.items.length > 0 ? p.items : [];
+        const menuTitle =
+          p.menu_title ||
+          (rawItems.length > 1
+            ? rawItems.map((i: any) => `${i.title} (${i.quantity})`).join(', ')
+            : rawItems[0]?.title) ||
+          'Tiffin Meal';
+        const menuItemId = p.menu_item_id || rawItems[0]?.id || 'item_default';
+        const deliveryWindow =
+          p.delivery_window || rawItems[0]?.delivery_window || '01:00 PM – 02:30 PM';
+
         const orderRef = await addDoc(collection(db, 'orders'), {
-          user_id: req.user_id,
-          user_name: req.user_name,
-          user_phone: req.user_phone,
-          menu_item_id: p.menu_item_id,
-          menu_title: p.menu_title,
-          meal_slot_id: p.meal_slot_id,
-          slot_name: p.slot_name,
-          delivery_window: p.delivery_window,
+          order_code: orderCode,
+          user_id: req.user_id || '',
+          user_name: req.user_name || p.receiver_name || 'Customer',
+          user_phone: req.user_phone || p.receiver_phone || '',
+          menu_item_id: menuItemId,
+          menu_title: menuTitle,
+          items: rawItems,
+          subtotal: p.subtotal || req.amount,
+          delivery_fee: p.delivery_fee ?? 0,
+          platform_fee: p.platform_fee ?? 0,
+          meal_slot_id: p.meal_slot_id || 'slot_lunch_special',
+          slot_name: p.slot_name || 'Lunch Special',
+          delivery_window: deliveryWindow,
           status: 'booked',
-          delivery_address: p.delivery_address,
-          receiver_name: p.receiver_name,
-          receiver_phone: p.receiver_phone,
+          delivery_address: p.delivery_address || {},
+          receiver_name: p.receiver_name || req.user_name || 'Customer',
+          receiver_phone: p.receiver_phone || req.user_phone || '',
           delivery_lat: p.delivery_lat || null,
           delivery_lng: p.delivery_lng || null,
           delivery_distance_km: p.delivery_distance_km || null,
@@ -123,16 +143,27 @@ export default function PaymentApprovalsPage() {
           updated_at: now,
         });
 
-        // Update payment_request with the created order ID
+        // Update payment_request with the created order ID and order_code
         await updateDoc(doc(db, 'payment_requests', req.id), {
           result_order_id: orderRef.id,
+          result_order_code: orderCode,
         });
 
-        // Increment quantity_booked on menu item (best-effort)
+        // Increment quantity_booked on menu item(s) (best-effort)
         try {
-          await updateDoc(doc(db, 'menu_items', p.menu_item_id), {
-            quantity_booked: increment(1),
-          });
+          if (rawItems.length > 0) {
+            for (const item of rawItems) {
+              if (item.id) {
+                await updateDoc(doc(db, 'menu_items', item.id), {
+                  quantity_booked: increment(item.quantity || 1),
+                });
+              }
+            }
+          } else if (p.menu_item_id) {
+            await updateDoc(doc(db, 'menu_items', p.menu_item_id), {
+              quantity_booked: increment(1),
+            });
+          }
         } catch (_) {}
 
       } else if (req.type === 'wallet_topup') {
@@ -155,18 +186,29 @@ export default function PaymentApprovalsPage() {
           payment_request_id: req.id,
         });
 
-      } else if (req.type === 'subscription' && req.subscription_payload) {
-        const sp = req.subscription_payload;
+      } else if (req.type === 'subscription') {
+        const sp = req.subscription_payload || {};
         const userDigits = (req.user_phone || '').replace(/\D/g, '');
         const userDocId = req.user_id || `usr_${userDigits}`;
+        const durationDays = sp.duration_days || (req.amount > 2000 ? 30 : 7);
+        const startDate = now;
+        const endDate = new Date(Date.now() + durationDays * 24 * 60 * 60 * 1000).toISOString();
+
         const subRef = await addDoc(collection(db, 'subscriptions'), {
           user_id: req.user_id || userDocId,
-          user_phone: req.user_phone,
-          plan_id: sp.plan_id,
-          plan_title: sp.plan_title,
-          meals_total: sp.meals,
-          meals_remaining: sp.meals,
+          user_phone: req.user_phone || '',
+          user_name: req.user_name || 'Customer',
+          plan_id: sp.plan_id || 'plan_weekly',
+          plan_type: sp.plan_title || 'Meal Plan',
+          plan_title: sp.plan_title || 'Meal Plan',
+          meals_total: sp.meals || 7,
+          meals_remaining: sp.meals || 7,
           status: 'active',
+          is_paused: false,
+          paused_dates: [],
+          start_date: startDate,
+          end_date: endDate,
+          daily_menu: sp.daily_menu || {},
           payment_method: 'upi',
           amount_paid: req.amount,
           payment_request_id: req.id,

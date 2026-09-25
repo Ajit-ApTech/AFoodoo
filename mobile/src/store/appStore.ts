@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { MealSlot, MenuItem, User, Subscription, NotificationSettings } from '../types';
+import { MealSlot, MenuItem, User, Subscription, NotificationSettings, CartItem } from '../types';
 
 export interface OrderItem {
   id: string;
@@ -42,6 +42,15 @@ interface AppState {
   addWalletTransaction: (tx: WalletTransaction) => void;
   deductWalletBalance: (amount: number, title: string) => void;
   creditWalletBalance: (amount: number, title: string, type?: WalletTransaction['type']) => void;
+  announcementsModalOpen: boolean;
+  setAnnouncementsModalOpen: (open: boolean) => void;
+  unreadAnnouncementsCount: number;
+  setUnreadAnnouncementsCount: (count: number) => void;
+  cart: CartItem[];
+  addToCart: (item: MenuItem, slot?: MealSlot | null) => void;
+  removeFromCart: (itemId: string) => void;
+  updateCartQuantity: (itemId: string, quantity: number) => void;
+  clearCart: () => void;
 }
 
 export const useAppStore = create<AppState>()(
@@ -50,6 +59,10 @@ export const useAppStore = create<AppState>()(
       (set, get) => ({
         user: null,
         setUser: user => set({ user }),
+        announcementsModalOpen: false,
+        setAnnouncementsModalOpen: open => set({ announcementsModalOpen: open }),
+        unreadAnnouncementsCount: 3,
+        setUnreadAnnouncementsCount: count => set({ unreadAnnouncementsCount: count }),
         notificationSettings: {
           cutoff_alerts: true,
           order_updates: true,
@@ -62,6 +75,61 @@ export const useAppStore = create<AppState>()(
           })),
         activeSlot: null,
         setActiveSlot: slot => set({ activeSlot: slot }),
+        cart: [],
+        addToCart: (item, slot) => {
+          const currentCart = get().cart;
+          const existing = currentCart.find(c => c.id === item.id);
+          if (existing) {
+            set({
+              cart: currentCart.map(c =>
+                c.id === item.id ? { ...c, quantity: c.quantity + 1 } : c
+              ),
+            });
+          } else {
+            const newItem: CartItem = {
+              id: item.id,
+              title: item.title,
+              price: item.price,
+              quantity: 1,
+              image_url: item.image_url,
+              veg_flag: item.veg_flag,
+              description: item.description,
+              meal_slot_id: item.meal_slot_id || slot?.id,
+              slot_name: slot?.name,
+              delivery_window: slot
+                ? `${slot.delivery_start_time || '1:00 PM'} - ${slot.delivery_end_time || '2:00 PM'}`
+                : undefined,
+            };
+            set({ cart: [...currentCart, newItem] });
+          }
+        },
+        removeFromCart: itemId => {
+          const currentCart = get().cart;
+          const existing = currentCart.find(c => c.id === itemId);
+          if (!existing) return;
+          if (existing.quantity <= 1) {
+            set({ cart: currentCart.filter(c => c.id !== itemId) });
+          } else {
+            set({
+              cart: currentCart.map(c =>
+                c.id === itemId ? { ...c, quantity: c.quantity - 1 } : c
+              ),
+            });
+          }
+        },
+        updateCartQuantity: (itemId, quantity) => {
+          const currentCart = get().cart;
+          if (quantity <= 0) {
+            set({ cart: currentCart.filter(c => c.id !== itemId) });
+          } else {
+            set({
+              cart: currentCart.map(c =>
+                c.id === itemId ? { ...c, quantity } : c
+              ),
+            });
+          }
+        },
+        clearCart: () => set({ cart: [] }),
         menuItems: [],
         setMenuItems: items => set({ menuItems: items }),
         subscriptions: [],
