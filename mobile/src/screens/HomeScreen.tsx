@@ -718,25 +718,60 @@ export default function HomeScreen({ navigation }: any) {
 
               {(() => {
                 const slotItem = currentSlot;
-                const openStr = slotItem.booking_open_time || '08:00 AM';
-                const cutoffStr = slotItem.booking_cutoff_time || '11:00 AM';
-                const delStart = slotItem.delivery_start_time || '01:00 PM';
-                const delEnd = slotItem.delivery_end_time || '02:00 PM';
+                const openStr = slotItem.booking_open_time || '05:00 AM';
+                const cutoffStr = slotItem.booking_cutoff_time || '11:59 AM';
+                const delStart = slotItem.delivery_start_time || '12:30 PM';
+                const delEnd = slotItem.delivery_end_time || '02:30 PM';
                 const timingText = `Book ${openStr} – ${cutoffStr}  •  Delivered ${delStart}–${delEnd}`;
 
-                const cutoffDayjs = parseTimeToDayjs(cutoffStr);
-                let slotOpen = true;
-                let countdownStr = 'Closed';
+                let openDayjs = parseTimeToDayjs(openStr);
+                let cutoffDayjs = parseTimeToDayjs(cutoffStr);
 
-                if (cutoffDayjs) {
-                  const diffMs = cutoffDayjs.diff(nowTime);
-                  if (diffMs > 0) {
-                    countdownStr = formatCountdown(diffMs);
-                    slotOpen = true;
+                if (openDayjs && cutoffDayjs && cutoffDayjs.isBefore(openDayjs)) {
+                  if (nowTime.isBefore(cutoffDayjs)) {
+                    openDayjs = openDayjs.subtract(1, 'day');
                   } else {
-                    countdownStr = 'Cutoff Passed';
-                    slotOpen = false;
+                    cutoffDayjs = cutoffDayjs.add(1, 'day');
                   }
+                }
+
+                let slotOpen = false;
+                let countdownLabel = 'Booking Closes In';
+                let countdownStr = 'Closed';
+                let badgeStatus = 'CLOSED';
+                let badgeBg = '#FEE2E2';
+                let badgeTextColor = '#B91C1C';
+                let buttonLabel = "View Today's Menu";
+
+                if (openDayjs && nowTime.isBefore(openDayjs)) {
+                  // Not open yet! (e.g. 2:08 AM before 5:00 AM)
+                  slotOpen = false;
+                  countdownLabel = 'Booking Opens In';
+                  const diffMs = openDayjs.diff(nowTime);
+                  countdownStr = formatCountdown(diffMs);
+                  badgeStatus = 'OPENS SOON';
+                  badgeBg = isDark ? 'rgba(251, 191, 36, 0.15)' : '#FEF3C7';
+                  badgeTextColor = isDark ? '#FBBF24' : '#D97706';
+                  buttonLabel = `Opens at ${openStr} • View Menu`;
+                } else if (cutoffDayjs && nowTime.isBefore(cutoffDayjs)) {
+                  // Window is live!
+                  slotOpen = true;
+                  countdownLabel = 'Booking Closes In';
+                  const diffMs = cutoffDayjs.diff(nowTime);
+                  countdownStr = formatCountdown(diffMs);
+                  badgeStatus = 'OPEN';
+                  badgeBg = isDark ? 'rgba(34, 197, 94, 0.15)' : '#DCFCE7';
+                  badgeTextColor = isDark ? '#4ADE80' : '#15803D';
+                  buttonLabel = "View Today's Menu";
+                } else {
+                  // Cutoff has passed!
+                  slotOpen = false;
+                  countdownLabel = 'Booking Closed';
+                  countdownStr = 'Cutoff Passed';
+                  badgeStatus = 'CLOSED';
+                  badgeBg = isDark ? 'rgba(239, 68, 68, 0.15)' : '#FEE2E2';
+                  badgeTextColor = isDark ? '#F87171' : '#B91C1C';
+                  buttonLabel = 'Window Closed • View Menu';
                 }
 
                 return (
@@ -763,16 +798,16 @@ export default function HomeScreen({ navigation }: any) {
                       <View
                         style={[
                           styles.statusBadgePill,
-                          { backgroundColor: slotOpen ? '#DCFCE7' : '#FEE2E2' },
+                          { backgroundColor: badgeBg },
                         ]}
                       >
                         <Text
                           style={[
                             styles.statusBadgeText,
-                            { color: slotOpen ? '#15803D' : '#B91C1C' },
+                            { color: badgeTextColor },
                           ]}
                         >
-                          {slotOpen ? 'OPEN' : 'CLOSED'}
+                          {badgeStatus}
                         </Text>
                       </View>
                     </View>
@@ -805,7 +840,7 @@ export default function HomeScreen({ navigation }: any) {
                       <Text style={styles.timerEmoji}>⏳</Text>
                       <View style={styles.timerCol}>
                         <Text style={[styles.timerLabel, { color: isDark ? '#9CA3AF' : '#6B7280' }]}>
-                          Booking Closes In
+                          {countdownLabel}
                         </Text>
                         <Text
                           style={[
@@ -840,7 +875,7 @@ export default function HomeScreen({ navigation }: any) {
                 <TouchableOpacity
                   style={[
                     styles.primaryButton,
-                    { backgroundColor: slotOpen ? theme.primary : theme.disabledBg },
+                    { backgroundColor: theme.primary },
                   ]}
                   onPress={() => {
                     setActiveSlot(slotItem);
@@ -851,10 +886,10 @@ export default function HomeScreen({ navigation }: any) {
                   <Text
                     style={[
                       styles.primaryButtonText,
-                      { color: slotOpen ? '#FFFFFF' : theme.disabledText },
+                      { color: '#FFFFFF' },
                     ]}
                   >
-                    {slotOpen ? "View Today's Menu" : 'Window Closed - View Menu'}
+                    {buttonLabel}
                   </Text>
                   <View style={[styles.buttonArrowCircle, { backgroundColor: '#FFFFFF' }]}>
                     <Text style={[styles.buttonArrowText, { color: theme.primary }]}>›</Text>

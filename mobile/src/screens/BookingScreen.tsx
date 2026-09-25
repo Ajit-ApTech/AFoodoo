@@ -22,6 +22,7 @@ import { useTheme } from '../theme/ThemeContext';
 import { haversineDistance, buildMapsLink } from '../utils/geo';
 import { UpiPaymentModal } from '../components/UpiPaymentModal';
 import { getCachedPushToken } from '../services/notificationService';
+import dayjs from 'dayjs';
 
 export default function BookingScreen({ route, navigation }: any) {
   const { theme, isDark } = useTheme();
@@ -181,6 +182,26 @@ export default function BookingScreen({ route, navigation }: any) {
     }
   };
 
+  const parseTimeToDayjs = (timeVal: any): dayjs.Dayjs | null => {
+    if (!timeVal) return null;
+    if (timeVal instanceof Date) return dayjs(timeVal);
+    if (timeVal?.toDate) return dayjs(timeVal.toDate());
+    if (typeof timeVal === 'string') {
+      const match = timeVal.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+      if (match) {
+        let hours = parseInt(match[1], 10);
+        const minutes = parseInt(match[2], 10);
+        const ampm = match[3].toUpperCase();
+        if (ampm === 'PM' && hours < 12) hours += 12;
+        if (ampm === 'AM' && hours === 12) hours = 0;
+        return dayjs().set('hour', hours).set('minute', minutes).set('second', 0);
+      }
+      const parsed = dayjs(timeVal);
+      if (parsed.isValid()) return parsed;
+    }
+    return null;
+  };
+
   const handleConfirmUpiPayment = async (utrNumber?: string) => {
     if (!pendingUpiPayload) return;
     setSubmitting(true);
@@ -246,6 +267,42 @@ export default function BookingScreen({ route, navigation }: any) {
     if (checkoutItems.length === 0) {
       Alert.alert('Cart is Empty', 'Please add items to your cart before proceeding.');
       return;
+    }
+
+    // Check slot booking window timing
+    if (activeSlot?.booking_open_time || activeSlot?.booking_cutoff_time) {
+      const openStr = activeSlot.booking_open_time || '05:00 AM';
+      const cutoffStr = activeSlot.booking_cutoff_time || '11:59 AM';
+      let openDayjs = parseTimeToDayjs(openStr);
+      let cutoffDayjs = parseTimeToDayjs(cutoffStr);
+      const now = dayjs();
+
+      if (openDayjs && cutoffDayjs && cutoffDayjs.isBefore(openDayjs)) {
+        if (now.isBefore(cutoffDayjs)) {
+          openDayjs = openDayjs.subtract(1, 'day');
+        } else {
+          cutoffDayjs = cutoffDayjs.add(1, 'day');
+        }
+      }
+
+      const isBeforeOpen = openDayjs ? now.isBefore(openDayjs) : false;
+      const isAfterCutoff = cutoffDayjs ? now.isAfter(cutoffDayjs) : false;
+      const isWindowOpen = !isBeforeOpen && !isAfterCutoff;
+
+      if (!isWindowOpen) {
+        if (isBeforeOpen) {
+          Alert.alert(
+            'Booking Not Open Yet ⏳',
+            `Bookings for ${activeSlot.name || 'this slot'} open at ${openStr}. Orders can only be placed between ${openStr} and ${cutoffStr}.`
+          );
+        } else {
+          Alert.alert(
+            'Booking Window Closed 🔒',
+            `The booking cutoff time (${cutoffStr}) has passed for ${activeSlot.name || 'this slot'}. Orders cannot be placed outside this window.`
+          );
+        }
+        return;
+      }
     }
 
     if (!receiverName.trim()) {

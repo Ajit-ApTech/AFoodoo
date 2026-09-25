@@ -166,9 +166,23 @@ export default function MenuScreen({ navigation }: any) {
     return null;
   };
 
-  const cutoffDayjs = parseTimeToDayjs(activeSlot?.booking_cutoff_time);
+  const openStr = activeSlot?.booking_open_time || '05:00 AM';
+  const cutoffStr = activeSlot?.booking_cutoff_time || '11:59 AM';
+  let openDayjs = parseTimeToDayjs(openStr);
+  let cutoffDayjs = parseTimeToDayjs(cutoffStr);
   const now = dayjs();
-  const isBeforeCutoff = cutoffDayjs ? now.isBefore(cutoffDayjs) : true;
+
+  if (openDayjs && cutoffDayjs && cutoffDayjs.isBefore(openDayjs)) {
+    if (now.isBefore(cutoffDayjs)) {
+      openDayjs = openDayjs.subtract(1, 'day');
+    } else {
+      cutoffDayjs = cutoffDayjs.add(1, 'day');
+    }
+  }
+
+  const isBeforeOpen = openDayjs ? now.isBefore(openDayjs) : false;
+  const isAfterCutoff = cutoffDayjs ? now.isAfter(cutoffDayjs) : false;
+  const isWindowOpen = !isBeforeOpen && !isAfterCutoff;
 
   // Filter items specifically by activeSlot.id or activeSlot.name
   const rawList = menuItems && menuItems.length > 0 ? menuItems : DEFAULT_SAMPLE_ITEMS;
@@ -184,11 +198,18 @@ export default function MenuScreen({ navigation }: any) {
   const displayList = filteredItems.length > 0 ? filteredItems : DEFAULT_SAMPLE_ITEMS;
 
   const handleBook = (item: any) => {
-    if (!isBeforeCutoff) {
-      Alert.alert(
-        'Cutoff Passed 🔒',
-        'The booking cutoff time has passed for this slot. You can browse dishes for reference, but new bookings are closed.'
-      );
+    if (!isWindowOpen) {
+      if (isBeforeOpen) {
+        Alert.alert(
+          'Booking Not Open Yet ⏳',
+          `Bookings for this slot open at ${openStr}. You can browse dishes for reference, but orders can only be placed between ${openStr} and ${cutoffStr}.`
+        );
+      } else {
+        Alert.alert(
+          'Booking Window Closed 🔒',
+          `The booking cutoff time (${cutoffStr}) has passed for this slot. You can browse dishes for reference, but bookings are closed.`
+        );
+      }
       return;
     }
     const remaining = (item.max_quantity || 50) - (item.quantity_booked || 0);
@@ -301,7 +322,13 @@ export default function MenuScreen({ navigation }: any) {
               </Text>
 
               <TouchableOpacity
-                onPress={() => addToCart(item, activeSlot)}
+                onPress={() => {
+                  if (!isWindowOpen) {
+                    handleBook(item);
+                    return;
+                  }
+                  addToCart(item, activeSlot);
+                }}
                 style={styles.stepperBtn}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
@@ -315,7 +342,7 @@ export default function MenuScreen({ navigation }: any) {
                 styles.bookButton,
                 {
                   backgroundColor:
-                    !isBeforeCutoff || isSoldOut ? theme.disabledBg : theme.primary,
+                    !isWindowOpen || isSoldOut ? theme.disabledBg : theme.primary,
                 },
               ]}
               onPress={() => handleBook(item)}
@@ -326,14 +353,14 @@ export default function MenuScreen({ navigation }: any) {
                   styles.bookButtonText,
                   {
                     color:
-                      !isBeforeCutoff || isSoldOut ? theme.disabledText : '#FFFFFF',
+                      !isWindowOpen || isSoldOut ? theme.disabledText : '#FFFFFF',
                   },
                 ]}
               >
-                {!isBeforeCutoff
-                  ? 'Cutoff Passed 🔒'
-                  : isSoldOut
+                {isSoldOut
                   ? 'Sold Out'
+                  : !isWindowOpen
+                  ? (isBeforeOpen ? `Opens ${openStr}` : 'Window Closed 🔒')
                   : '🛒 Book Meal Now'}
               </Text>
             </TouchableOpacity>
@@ -453,16 +480,28 @@ export default function MenuScreen({ navigation }: any) {
             <View
               style={[
                 styles.windowOpenPill,
-                { backgroundColor: isBeforeCutoff ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)' },
+                {
+                  backgroundColor: isWindowOpen
+                    ? 'rgba(16, 185, 129, 0.15)'
+                    : isBeforeOpen
+                    ? 'rgba(245, 158, 11, 0.15)'
+                    : 'rgba(239, 68, 68, 0.15)',
+                },
               ]}
             >
               <Text
                 style={[
                   styles.windowOpenText,
-                  { color: isBeforeCutoff ? '#10B981' : '#EF4444' },
+                  {
+                    color: isWindowOpen
+                      ? '#10B981'
+                      : isBeforeOpen
+                      ? '#D97706'
+                      : '#EF4444',
+                  },
                 ]}
               >
-                {isBeforeCutoff ? 'WINDOW OPEN' : 'CLOSED'}
+                {isWindowOpen ? 'WINDOW OPEN' : isBeforeOpen ? 'OPENS SOON' : 'CLOSED'}
               </Text>
             </View>
           </View>
@@ -515,11 +554,32 @@ export default function MenuScreen({ navigation }: any) {
           </View>
 
           <TouchableOpacity
-            style={[styles.floatingCartBtn, { backgroundColor: theme.primary }]}
-            onPress={() => navigation.navigate('Booking', {})}
+            style={[
+              styles.floatingCartBtn,
+              { backgroundColor: isWindowOpen ? theme.primary : theme.disabledBg },
+            ]}
+            onPress={() => {
+              if (!isWindowOpen) {
+                if (isBeforeOpen) {
+                  Alert.alert(
+                    'Booking Not Open Yet ⏳',
+                    `Checkout opens at ${openStr}. Bookings for ${activeSlot?.name || 'this slot'} are accepted between ${openStr} and ${cutoffStr}.`
+                  );
+                } else {
+                  Alert.alert(
+                    'Booking Window Closed 🔒',
+                    `Cutoff time (${cutoffStr}) has passed for ${activeSlot?.name || 'this slot'}. Orders cannot be submitted now.`
+                  );
+                }
+                return;
+              }
+              navigation.navigate('Booking', {});
+            }}
             activeOpacity={0.85}
           >
-            <Text style={styles.floatingCartBtnText}>View Cart & Checkout →</Text>
+            <Text style={[styles.floatingCartBtnText, !isWindowOpen && { color: theme.disabledText }]}>
+              {isWindowOpen ? 'View Cart & Checkout →' : 'Window Closed 🔒'}
+            </Text>
           </TouchableOpacity>
         </View>
       )}
