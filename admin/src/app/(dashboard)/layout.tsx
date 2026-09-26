@@ -81,90 +81,127 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     return null;
   }
 
-  const navItems = [
+  interface NavItem {
+    name: string;
+    href: string;
+    icon: any;
+    badge?: number;
+    roles: string[];
+  }
+
+  interface NavSection {
+    title: string;
+    items: NavItem[];
+  }
+
+  const navSections: NavSection[] = [
     {
-      name: 'Dashboard Snapshot',
-      href: '/',
-      icon: LayoutDashboard,
-      roles: ['super_admin', 'kitchen_staff', 'delivery_manager'],
+      title: 'OVERVIEW',
+      items: [
+        {
+          name: 'Dashboard Snapshot',
+          href: '/',
+          icon: LayoutDashboard,
+          roles: ['super_admin', 'kitchen_staff', 'delivery_manager'],
+        },
+        {
+          name: 'Payment Approvals',
+          href: '/payment-approvals',
+          icon: CreditCard,
+          badge: pendingPaymentsCount,
+          roles: ['super_admin', 'kitchen_staff'],
+        },
+      ],
     },
     {
-      name: 'Payment Approvals',
-      href: '/payment-approvals',
-      icon: CreditCard,
-      badge: pendingPaymentsCount,
-      roles: ['super_admin', 'kitchen_staff'],
+      title: 'ORDERS & DISPATCH',
+      items: [
+        {
+          name: 'Live Order Queue',
+          href: '/orders',
+          icon: ShoppingBag,
+          roles: ['super_admin', 'kitchen_staff', 'delivery_manager'],
+        },
+        {
+          name: 'Delivery Settings',
+          href: '/settings',
+          icon: MapPin,
+          roles: ['super_admin'],
+        },
+      ],
     },
     {
-      name: 'Meal Slot Cutoffs',
-      href: '/slots',
-      icon: Clock,
-      roles: ['super_admin', 'kitchen_staff'],
+      title: 'KITCHEN & MEALS',
+      items: [
+        {
+          name: 'Food Menu & Photos',
+          href: '/menu',
+          icon: UtensilsCrossed,
+          roles: ['super_admin', 'kitchen_staff'],
+        },
+        {
+          name: 'Meal Slot Cutoffs',
+          href: '/slots',
+          icon: Clock,
+          roles: ['super_admin', 'kitchen_staff'],
+        },
+      ],
     },
     {
-      name: 'Food Menu & Photos',
-      href: '/menu',
-      icon: UtensilsCrossed,
-      roles: ['super_admin', 'kitchen_staff'],
+      title: 'CUSTOMERS & SUBSCRIPTIONS',
+      items: [
+        {
+          name: 'User Accounts & Wallet',
+          href: '/users',
+          icon: Users,
+          roles: ['super_admin'],
+        },
+        {
+          name: 'Meal Subscriptions',
+          href: '/subscriptions',
+          icon: Repeat,
+          roles: ['super_admin'],
+        },
+        {
+          name: 'Meal Plans & Packs',
+          href: '/plans',
+          icon: Package,
+          roles: ['super_admin'],
+        },
+      ],
     },
     {
-      name: 'User Accounts & Wallet',
-      href: '/users',
-      icon: Users,
-      roles: ['super_admin'],
-    },
-    {
-      name: 'Live Order Queue',
-      href: '/orders',
-      icon: ShoppingBag,
-      roles: ['super_admin', 'kitchen_staff', 'delivery_manager'],
-    },
-    {
-      name: 'Meal Subscriptions',
-      href: '/subscriptions',
-      icon: Repeat,
-      roles: ['super_admin'],
-    },
-    {
-      name: 'Meal Plans & Packs',
-      href: '/plans',
-      icon: Package,
-      roles: ['super_admin'],
-    },
-    {
-      name: 'Revenue & Analytics',
-      href: '/analytics',
-      icon: BarChart3,
-      roles: ['super_admin'],
-    },
-    {
-      name: 'Push Broadcaster',
-      href: '/broadcast',
-      icon: Bell,
-      roles: ['super_admin'],
-    },
-    {
-      name: 'System Audit Logs',
-      href: '/audit-logs',
-      icon: ShieldAlert,
-      roles: ['super_admin'],
-    },
-    {
-      name: 'Delivery Settings',
-      href: '/settings',
-      icon: MapPin,
-      roles: ['super_admin'],
+      title: 'GROWTH & SYSTEM',
+      items: [
+        {
+          name: 'Revenue & Analytics',
+          href: '/analytics',
+          icon: BarChart3,
+          roles: ['super_admin'],
+        },
+        {
+          name: 'Push Broadcaster',
+          href: '/broadcast',
+          icon: Bell,
+          roles: ['super_admin'],
+        },
+        {
+          name: 'System Audit Logs',
+          href: '/audit-logs',
+          icon: ShieldAlert,
+          roles: ['super_admin'],
+        },
+      ],
     },
   ];
 
   const userRole = user?.role || 'super_admin';
-  const visibleNav = navItems.filter(item => item.roles.includes(userRole));
 
   const SidebarContent = () => (
     <div className="flex flex-col justify-between h-full">
-      <div>
+      <div className="flex flex-col flex-1 min-h-0">
         {/* Top Brand Bar */}
-        <div className="h-16 px-6 flex items-center justify-between border-b border-slate-800">
+        <div className="h-16 px-6 flex items-center justify-between border-b border-slate-800 shrink-0">
           <div className="flex items-center gap-3">
             <img src="/logo.png" alt="AFoodoo" className="w-8 h-8 rounded-lg object-cover border border-slate-700/60" />
             <div>
@@ -183,9 +220,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </div>
 
         {/* Role Badge Indicator */}
-        <div className="p-4 mx-4 mt-4 bg-slate-800/60 border border-slate-700/60 rounded-xl">
+        <div className="p-3 mx-4 mt-3 bg-slate-800/60 border border-slate-700/60 rounded-xl shrink-0">
           <div className="flex items-center justify-between text-xs mb-1">
-            <span className="text-slate-400 font-medium">Logged Role:</span>
+            <span className="text-slate-400 font-medium text-[11px]">Logged Role:</span>
             <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-orange-600/20 text-orange-400 border border-orange-500/30 uppercase">
               {userRole.replace('_', ' ')}
             </span>
@@ -193,40 +230,52 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <p className="text-xs font-semibold text-slate-200 truncate">{user?.name}</p>
         </div>
 
-        {/* Navigation Links */}
-        <nav className="px-3 mt-6 space-y-1">
-          {visibleNav.map(item => {
-            const Icon = item.icon;
-            const isActive = pathname === item.href;
+        {/* Categorized Section-Wise Navigation Links */}
+        <nav className="flex-1 px-3 mt-4 overflow-y-auto space-y-4 pb-4">
+          {navSections.map(section => {
+            const visibleItems = section.items.filter(item => item.roles.includes(userRole));
+            if (visibleItems.length === 0) return null;
 
             return (
-              <Link
-                key={item.href}
-                href={item.href}
-                onClick={() => setMobileOpen(false)}
-                className={`flex items-center justify-between px-3.5 py-3 rounded-xl text-xs font-semibold transition-all ${
-                  isActive
-                    ? 'bg-orange-600 text-white shadow-lg shadow-orange-600/25'
-                    : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/60'
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <Icon className="h-4 w-4 shrink-0" />
-                  <span>{item.name}</span>
-                </div>
-                {item.badge != null && item.badge > 0 && (
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-rose-500 text-white animate-pulse">
-                    {item.badge}
-                  </span>
-                )}
-              </Link>
+              <div key={section.title} className="space-y-1">
+                <p className="px-3.5 text-[10px] font-extrabold text-slate-500 uppercase tracking-wider mb-1">
+                  {section.title}
+                </p>
+                {visibleItems.map(item => {
+                  const Icon = item.icon;
+                  const isActive = pathname === item.href;
+
+                  return (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      onClick={() => setMobileOpen(false)}
+                      className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all ${
+                        isActive
+                          ? 'bg-orange-600 text-white shadow-lg shadow-orange-600/25 font-bold'
+                          : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/60'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <Icon className="h-4 w-4 shrink-0" />
+                        <span>{item.name}</span>
+                      </div>
+                      {item.badge != null && item.badge > 0 && (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-rose-500 text-white animate-pulse">
+                          {item.badge}
+                        </span>
+                      )}
+                    </Link>
+                  );
+                })}
+              </div>
             );
           })}
         </nav>
       </div>
 
       {/* User Footer & Sign Out */}
-      <div className="p-4 border-t border-slate-800">
+      <div className="p-3 border-t border-slate-800 shrink-0">
         <button
           onClick={handleLogout}
           className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl border border-rose-500/30 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 text-xs font-bold transition-all"
@@ -241,7 +290,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   return (
     <div className="min-h-screen flex bg-slate-950 text-slate-100">
       {/* Desktop Sidebar Navigation */}
-      <aside className="hidden lg:flex w-64 bg-slate-900 border-r border-slate-800 flex-col shrink-0">
+      <aside className="hidden lg:flex w-64 bg-slate-900 border-r border-slate-800 flex-col shrink-0 h-screen sticky top-0">
         <SidebarContent />
       </aside>
 
