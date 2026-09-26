@@ -22,6 +22,7 @@ import {
   Menu,
   X,
   CreditCard,
+  Ticket,
 } from 'lucide-react';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
@@ -173,6 +174,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     {
       title: 'GROWTH & SYSTEM',
       items: [
+        {
+          name: 'Coupons & Discounts',
+          href: '/coupons',
+          icon: Ticket,
+          roles: ['super_admin'],
+        },
         {
           name: 'Revenue & Analytics',
           href: '/analytics',

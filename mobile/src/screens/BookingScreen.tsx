@@ -66,14 +66,13 @@ export default function BookingScreen({ route, navigation }: any) {
   const [deliveryDistanceKm, setDeliveryDistanceKm] = useState<number | null>(null);
   const [isResolvingLocation, setIsResolvingLocation] = useState(false);
 
-  // Delivery instructions
-  const [deliveryInstructions, setDeliveryInstructions] = useState('');
-
   // Coupon state
   const [couponCode, setCouponCode] = useState('');
   const [couponDiscount, setCouponDiscount] = useState(0);
   const [couponApplied, setCouponApplied] = useState(false);
+  const [appliedCouponCode, setAppliedCouponCode] = useState('');
   const [couponMsg, setCouponMsg] = useState('');
+  const [verifyingCoupon, setVerifyingCoupon] = useState(false);
 
   // Payment settings state
   const [paymentMethod, setPaymentMethod] = useState<'upi' | 'wallet' | 'cod'>('wallet');
@@ -258,24 +257,108 @@ export default function BookingScreen({ route, navigation }: any) {
   const walletBalance = user?.wallet_balance ?? 10204;
   const isWalletSufficient = walletBalance >= totalAmount;
 
-  const handleApplyCoupon = () => {
+  const handleApplyCoupon = async () => {
     const code = couponCode.trim().toUpperCase();
     if (!code) {
       setCouponMsg('Please enter a coupon code.');
       return;
     }
-    if (code === 'AFOODOO50' || code === 'FIRST50') {
-      const discount = Math.min(50, Math.floor(subtotal * 0.5));
-      setCouponDiscount(discount);
-      setCouponApplied(true);
-      setCouponMsg(`✓ Coupon applied! Saved ₹${discount}`);
-    } else if (code === 'FREE' || code === 'FREEDEL') {
-      setCouponDiscount(finalDeliveryFee);
-      setCouponApplied(true);
-      setCouponMsg(`✓ Free Delivery applied! Saved ₹${finalDeliveryFee}`);
-    } else {
-      setCouponMsg('Invalid coupon code. Try AFOODOO50 or FREEDEL.');
+    setVerifyingCoupon(true);
+    setCouponMsg('');
+
+    try {
+      const { collection, query, where, getDocs } = require('firebase/firestore');
+      const { firestore } = require('../firebaseConfig');
+      const q = query(collection(firestore, 'coupons'), where('code', '==', code));
+      const snap = await getDocs(q);
+
+      if (!snap.empty) {
+        const couponDoc = snap.docs[0].data();
+        if (couponDoc.is_active === false) {
+          setCouponMsg('This coupon is currently inactive.');
+          setCouponDiscount(0);
+          setCouponApplied(false);
+          setAppliedCouponCode('');
+          setVerifyingCoupon(false);
+          return;
+        }
+
+        if (couponDoc.min_order_amount && subtotal < Number(couponDoc.min_order_amount)) {
+          setCouponMsg(`Min order of ₹${couponDoc.min_order_amount} required for this coupon.`);
+          setCouponDiscount(0);
+          setCouponApplied(false);
+          setAppliedCouponCode('');
+          setVerifyingCoupon(false);
+          return;
+        }
+
+        let discount = 0;
+        if (couponDoc.discount_type === 'percentage') {
+          const pct = Number(couponDoc.discount_value) || 0;
+          const rawDiscount = Math.floor(subtotal * (pct / 100));
+          discount = couponDoc.max_discount ? Math.min(rawDiscount, Number(couponDoc.max_discount)) : rawDiscount;
+        } else if (couponDoc.discount_type === 'flat') {
+          discount = Math.min(subtotal, Number(couponDoc.discount_value) || 0);
+        } else if (couponDoc.discount_type === 'free_delivery') {
+          discount = finalDeliveryFee;
+        }
+
+        setCouponDiscount(discount);
+        setCouponApplied(true);
+        setAppliedCouponCode(code);
+        setCouponMsg(`✓ Coupon ${code} applied! Saved ₹${discount}`);
+      } else {
+        // Fallback for default promotional codes
+        if (code === 'AFOODOO50' || code === 'FIRST50') {
+          const discount = Math.min(50, Math.floor(subtotal * 0.5));
+          setCouponDiscount(discount);
+          setCouponApplied(true);
+          setAppliedCouponCode(code);
+          setCouponMsg(`✓ Coupon ${code} applied! Saved ₹${discount}`);
+        } else if (code === 'FREE' || code === 'FREEDEL') {
+          setCouponDiscount(finalDeliveryFee);
+          setCouponApplied(true);
+          setAppliedCouponCode(code);
+          setCouponMsg(`✓ Free Delivery applied! Saved ₹${finalDeliveryFee}`);
+        } else if (code === 'FLAT30') {
+          const discount = Math.min(subtotal, 30);
+          setCouponDiscount(discount);
+          setCouponApplied(true);
+          setAppliedCouponCode(code);
+          setCouponMsg(`✓ Coupon FLAT30 applied! Saved ₹${discount}`);
+        } else {
+          setCouponMsg('Invalid coupon code.');
+          setCouponDiscount(0);
+          setCouponApplied(false);
+          setAppliedCouponCode('');
+        }
+      }
+    } catch (e) {
+      if (code === 'AFOODOO50' || code === 'FIRST50') {
+        const discount = Math.min(50, Math.floor(subtotal * 0.5));
+        setCouponDiscount(discount);
+        setCouponApplied(true);
+        setAppliedCouponCode(code);
+        setCouponMsg(`✓ Coupon ${code} applied! Saved ₹${discount}`);
+      } else if (code === 'FREE' || code === 'FREEDEL') {
+        setCouponDiscount(finalDeliveryFee);
+        setCouponApplied(true);
+        setAppliedCouponCode(code);
+        setCouponMsg(`✓ Free Delivery applied! Saved ₹${finalDeliveryFee}`);
+      } else {
+        setCouponMsg('Could not verify coupon.');
+      }
+    } finally {
+      setVerifyingCoupon(false);
     }
+  };
+
+  const handleRemoveCoupon = () => {
+    setCouponCode('');
+    setCouponDiscount(0);
+    setCouponApplied(false);
+    setAppliedCouponCode('');
+    setCouponMsg('');
   };
 
   const handleDetectLocation = async () => {
@@ -382,7 +465,9 @@ export default function BookingScreen({ route, navigation }: any) {
           maps_link: pendingUpiPayload.mapsLink ?? null,
           receiver_name: pendingUpiPayload.receiverName,
           receiver_phone: pendingUpiPayload.receiverPhone,
-          instructions: deliveryInstructions,
+          instructions: '',
+          coupon_code: appliedCouponCode || null,
+          discount: couponDiscount,
         },
       });
 
@@ -585,7 +670,8 @@ export default function BookingScreen({ route, navigation }: any) {
         delivery_address: deliveryAddress,
         delivery_name: receiverName.trim(),
         delivery_phone: receiverPhone.trim(),
-        instructions: deliveryInstructions.trim(),
+        instructions: '',
+        coupon_code: appliedCouponCode || null,
         payment_method: paymentMethod,
         payment_status: paymentMethod === 'cod' ? 'pending' : 'paid',
         otp_code: otpCode,
@@ -986,32 +1072,6 @@ export default function BookingScreen({ route, navigation }: any) {
           )}
         </View>
 
-        {/* Delivery Instructions (Optional) Card */}
-        <View
-          style={[
-            styles.card,
-            {
-              backgroundColor: isDark ? '#1C1512' : '#FFFFFF',
-              borderColor: isDark ? 'rgba(255, 107, 0, 0.18)' : '#F3E8E2',
-            },
-          ]}
-        >
-          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
-            <Text style={{ fontSize: 16, marginRight: 6 }}>📝</Text>
-            <Text style={[styles.cardHeader, { color: theme.textPrimary, marginBottom: 0 }]}>
-              Delivery Instructions (Optional)
-            </Text>
-          </View>
-
-          <TextInput
-            style={[inputStyle, { minHeight: 46 }]}
-            value={deliveryInstructions}
-            onChangeText={setDeliveryInstructions}
-            placeholder="e.g. Leave at door, call on arrival, ring bell..."
-            placeholderTextColor={theme.textMuted}
-          />
-        </View>
-
         {/* Apply Coupon Card */}
         <View
           style={[
@@ -1033,20 +1093,30 @@ export default function BookingScreen({ route, navigation }: any) {
             <TextInput
               style={[inputStyle, { flex: 1, marginBottom: 0, textTransform: 'uppercase' }]}
               value={couponCode}
-              onChangeText={setCouponCode}
-              placeholder="Enter coupon code"
+              onChangeText={text => {
+                setCouponCode(text);
+                if (couponApplied) {
+                  setCouponApplied(false);
+                  setCouponDiscount(0);
+                  setAppliedCouponCode('');
+                  setCouponMsg('');
+                }
+              }}
+              placeholder="Enter coupon code (e.g. AFOODOO50)"
               placeholderTextColor={theme.textMuted}
               autoCapitalize="characters"
+              editable={!couponApplied && !verifyingCoupon}
             />
             <TouchableOpacity
               style={[
                 styles.applyCouponBtn,
-                { backgroundColor: couponApplied ? '#10B981' : theme.primary },
+                { backgroundColor: couponApplied ? '#EF4444' : theme.primary },
               ]}
-              onPress={handleApplyCoupon}
+              onPress={couponApplied ? handleRemoveCoupon : handleApplyCoupon}
+              disabled={verifyingCoupon}
             >
               <Text style={styles.applyCouponBtnText}>
-                {couponApplied ? 'Applied ✓' : 'Apply'}
+                {verifyingCoupon ? 'Verifying...' : couponApplied ? 'Remove ✕' : 'Apply'}
               </Text>
             </TouchableOpacity>
           </View>

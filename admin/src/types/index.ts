@@ -204,3 +204,18 @@ export interface DashboardSnapshot {
   };
 }
 
+export interface Coupon {
+  id: string;
+  code: string;
+  description: string;
+  discount_type: 'percentage' | 'flat' | 'free_delivery';
+  discount_value: number;
+  max_discount?: number;
+  min_order_amount: number;
+  is_active: boolean;
+  usage_count?: number;
+  created_at: string;
+  expires_at?: string;
+}
+
+
