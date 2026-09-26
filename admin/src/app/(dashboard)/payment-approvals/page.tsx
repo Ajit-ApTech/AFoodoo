@@ -7,6 +7,7 @@ import {
   query,
   orderBy,
   doc,
+  getDoc,
   updateDoc,
   addDoc,
   increment,
@@ -149,20 +150,32 @@ export default function PaymentApprovalsPage() {
           result_order_code: orderCode,
         });
 
-        // Increment quantity_booked on menu item(s) (best-effort)
+        // Increment quantity_booked on menu item(s) (with daily 12 AM reset check)
         try {
-          if (rawItems.length > 0) {
-            for (const item of rawItems) {
-              if (item.id) {
-                await updateDoc(doc(db, 'menu_items', item.id), {
-                  quantity_booked: increment(item.quantity || 1),
+          const nowD = new Date();
+          const todayStr = `${nowD.getFullYear()}-${String(nowD.getMonth() + 1).padStart(2, '0')}-${String(nowD.getDate()).padStart(2, '0')}`;
+          const itemsToProcess = rawItems.length > 0 ? rawItems : p.menu_item_id ? [{ id: p.menu_item_id, quantity: 1 }] : [];
+
+          for (const it of itemsToProcess) {
+            if (it.id) {
+              const itemRef = doc(db, 'menu_items', it.id);
+              const itemSnap = await getDoc(itemRef);
+              if (itemSnap.exists()) {
+                const itemData = itemSnap.data();
+                const lastDate = itemData.last_booked_date || itemData.date;
+                const isNewDay = !lastDate || lastDate < todayStr;
+                const currentBooked = isNewDay ? 0 : (Number(itemData.quantity_booked) || 0);
+                await updateDoc(itemRef, {
+                  quantity_booked: currentBooked + (it.quantity || 1),
+                  last_booked_date: todayStr,
+                });
+              } else {
+                await updateDoc(itemRef, {
+                  quantity_booked: increment(it.quantity || 1),
+                  last_booked_date: todayStr,
                 });
               }
             }
-          } else if (p.menu_item_id) {
-            await updateDoc(doc(db, 'menu_items', p.menu_item_id), {
-              quantity_booked: increment(1),
-            });
           }
         } catch (_) {}
 

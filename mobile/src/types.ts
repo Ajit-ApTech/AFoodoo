@@ -59,6 +59,7 @@ export interface MenuItem {
   is_available?: boolean;
   max_quantity?: number;
   quantity_booked?: number;
+  last_booked_date?: string;
   [key: string]: any;
 }
 

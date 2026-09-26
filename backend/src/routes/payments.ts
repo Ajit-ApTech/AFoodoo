@@ -194,14 +194,22 @@ router.patch('/:id/approve', requireAdminRole(), async (req: AdminRequest, res: 
 
       await db.collection('orders').doc(orderId).set(orderData);
 
-      // Increment quantity_booked if menuItem exists
+      // Increment quantity_booked if menuItem exists (with daily 12 AM reset check)
       if (orderPayload.menu_item_id) {
         try {
           const itemRef = db.collection('menu_items').doc(orderPayload.menu_item_id);
           const itemSnap = await itemRef.get();
           if (itemSnap.exists) {
-            const currentBooked = itemSnap.data()?.quantity_booked || 0;
-            await itemRef.update({ quantity_booked: currentBooked + 1 });
+            const itemData = itemSnap.data();
+            const nowD = new Date();
+            const todayStr = `${nowD.getFullYear()}-${String(nowD.getMonth() + 1).padStart(2, '0')}-${String(nowD.getDate()).padStart(2, '0')}`;
+            const lastDate = itemData?.last_booked_date || itemData?.date;
+            const isNewDay = !lastDate || lastDate < todayStr;
+            const currentBooked = isNewDay ? 0 : (itemData?.quantity_booked || 0);
+            await itemRef.update({
+              quantity_booked: currentBooked + 1,
+              last_booked_date: todayStr,
+            });
           }
         } catch (e) {}
       }

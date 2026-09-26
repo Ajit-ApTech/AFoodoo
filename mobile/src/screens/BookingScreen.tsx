@@ -577,18 +577,34 @@ export default function BookingScreen({ route, navigation }: any) {
       }
 
       // 1. Write order directly to Cloud Firestore
-      const { collection, addDoc, doc, updateDoc, increment } = require('firebase/firestore');
+      const { collection, addDoc, doc, updateDoc, increment, getDoc } = require('firebase/firestore');
       const { firestore } = require('../firebaseConfig');
       const docRef = await addDoc(collection(firestore, 'orders'), orderData);
       const realOrderId = docRef.id;
 
-      // 2. Increment quantity_booked on menu items (best-effort)
+      // 2. Increment quantity_booked on menu items (with daily 12 AM reset check)
       try {
+        const nowD = new Date();
+        const todayStr = `${nowD.getFullYear()}-${String(nowD.getMonth() + 1).padStart(2, '0')}-${String(nowD.getDate()).padStart(2, '0')}`;
         for (const it of checkoutItems) {
           if (it.id) {
-            await updateDoc(doc(firestore, 'menu_items', it.id), {
-              quantity_booked: increment(it.quantity || 1),
-            });
+            const itemRef = doc(firestore, 'menu_items', it.id);
+            const itemSnap = await getDoc(itemRef);
+            if (itemSnap.exists()) {
+              const itemData = itemSnap.data();
+              const lastDate = itemData.last_booked_date || itemData.date;
+              const isNewDay = !lastDate || lastDate < todayStr;
+              const currentBooked = isNewDay ? 0 : (Number(itemData.quantity_booked) || 0);
+              await updateDoc(itemRef, {
+                quantity_booked: currentBooked + (it.quantity || 1),
+                last_booked_date: todayStr,
+              });
+            } else {
+              await updateDoc(itemRef, {
+                quantity_booked: increment(it.quantity || 1),
+                last_booked_date: todayStr,
+              });
+            }
           }
         }
       } catch (_) {}

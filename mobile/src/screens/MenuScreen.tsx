@@ -129,7 +129,18 @@ export default function MenuScreen({ navigation }: any) {
         q,
         snap => {
           if (isMounted) {
-            const items = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as DocumentData));
+            const nowD = new Date();
+            const todayStr = `${nowD.getFullYear()}-${String(nowD.getMonth() + 1).padStart(2, '0')}-${String(nowD.getDate()).padStart(2, '0')}`;
+            const items = snap.docs.map(doc => {
+              const data = doc.data();
+              const bookedDate = data.last_booked_date || data.date;
+              const isStale = Boolean(bookedDate && bookedDate < todayStr);
+              return {
+                id: doc.id,
+                ...data,
+                quantity_booked: isStale ? 0 : (Number(data.quantity_booked) || 0),
+              } as DocumentData;
+            });
             setMenuItems(items as any);
             setLoading(false);
           }
@@ -212,7 +223,12 @@ export default function MenuScreen({ navigation }: any) {
       }
       return;
     }
-    const remaining = (item.max_quantity || 50) - (item.quantity_booked || 0);
+    const nowD = new Date();
+    const todayStr = `${nowD.getFullYear()}-${String(nowD.getMonth() + 1).padStart(2, '0')}-${String(nowD.getDate()).padStart(2, '0')}`;
+    const bookedDate = item.last_booked_date || item.date;
+    const isNewDay = Boolean(bookedDate && bookedDate < todayStr);
+    const effectiveBooked = isNewDay ? 0 : (Number(item.quantity_booked) || 0);
+    const remaining = (item.max_quantity || 50) - effectiveBooked;
     const isSoldOut = item.is_available === false || remaining <= 0;
     if (isSoldOut) {
       Alert.alert('Sold Out 🔒', 'Sorry, this meal has been marked as sold out by admin!');
@@ -228,7 +244,12 @@ export default function MenuScreen({ navigation }: any) {
 
   const renderItem = ({ item }: any) => {
     const isExpanded = expandedId === item.id;
-    const remaining = Math.max(1, (item.max_quantity || 50) - (item.quantity_booked || 0));
+    const nowD = new Date();
+    const todayStr = `${nowD.getFullYear()}-${String(nowD.getMonth() + 1).padStart(2, '0')}-${String(nowD.getDate()).padStart(2, '0')}`;
+    const bookedDate = item.last_booked_date || item.date;
+    const isNewDay = Boolean(bookedDate && bookedDate < todayStr);
+    const effectiveBooked = isNewDay ? 0 : (Number(item.quantity_booked) || 0);
+    const remaining = Math.max(0, (item.max_quantity || 50) - effectiveBooked);
     const isSoldOut = item.is_available === false || remaining <= 0;
 
     const cartItem = cart.find(c => c.id === item.id);

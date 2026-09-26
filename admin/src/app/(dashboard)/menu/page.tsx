@@ -5,7 +5,15 @@ import { db, storage } from '../../../lib/firebase';
 import { collection, onSnapshot, doc, updateDoc, addDoc, deleteDoc } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { MenuItem, MealSlot } from '../../../types';
-import { UtensilsCrossed, Plus, Upload, Copy, AlertCircle, Edit, Trash2 } from 'lucide-react';
+import { UtensilsCrossed, Plus, Upload, Copy, AlertCircle, Edit, Trash2, RefreshCw } from 'lucide-react';
+
+function getTodayDateString(): string {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
 
 export default function MenuManagementPage() {
   const [items, setItems] = useState<MenuItem[]>([]);
@@ -15,6 +23,7 @@ export default function MenuManagementPage() {
   const [editingItem, setEditingItem] = useState<MenuItem | null>(null);
   const [uploadingImage, setUploadingImage] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [resettingPortions, setResettingPortions] = useState(false);
 
   // Form State
   const [title, setTitle] = useState('');
@@ -25,14 +34,33 @@ export default function MenuManagementPage() {
   const [slotId, setSlotId] = useState('slot_lunch_today');
   const [imageUrl, setImageUrl] = useState('');
 
-  // Subscribe directly to Cloud Firestore menu_items collection
+  // Subscribe directly to Cloud Firestore menu_items collection + Auto-reset stale daily portions
   useEffect(() => {
     try {
-      const unsub = onSnapshot(collection(db, 'menu_items'), snap => {
+      const unsub = onSnapshot(collection(db, 'menu_items'), async snap => {
         if (!snap.empty) {
+          const todayStr = getTodayDateString();
           const list = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as MenuItem));
           const uniqueList = Array.from(new Map(list.map(item => [item.id, item])).values());
           setItems(uniqueList);
+
+          // Auto-detect and reset any stale portions from yesterday or earlier to 0
+          for (const docSnap of snap.docs) {
+            const data = docSnap.data();
+            const bookedDate = data.last_booked_date || data.date;
+            const quantityBooked = Number(data.quantity_booked) || 0;
+            if (quantityBooked > 0 && bookedDate && bookedDate < todayStr) {
+              try {
+                await updateDoc(doc(db, 'menu_items', docSnap.id), {
+                  quantity_booked: 0,
+                  last_booked_date: todayStr,
+                });
+                console.log(`[Auto-Reset 12 AM] Reset daily portions to 0 for: ${data.title}`);
+              } catch (resetErr) {
+                console.error('Error auto-resetting menu item portions:', resetErr);
+              }
+            }
+          }
         }
       });
       return unsub;
@@ -40,6 +68,38 @@ export default function MenuManagementPage() {
       console.log('Using default menu items listener catch');
     }
   }, []);
+
+  // Live 12:00 AM Midnight auto-reset timer while Admin Dashboard is open
+  useEffect(() => {
+    let timeoutId: NodeJS.Timeout;
+
+    const scheduleMidnightReset = () => {
+      const now = new Date();
+      const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 1);
+      const msUntilMidnight = Math.max(1000, nextMidnight.getTime() - now.getTime());
+
+      timeoutId = setTimeout(async () => {
+        const todayStr = getTodayDateString();
+        console.log('[Midnight Trigger] Auto-resetting daily meal portions to 0...');
+        try {
+          for (const item of items) {
+            if ((item.quantity_booked || 0) > 0) {
+              await updateDoc(doc(db, 'menu_items', item.id), {
+                quantity_booked: 0,
+                last_booked_date: todayStr,
+              });
+            }
+          }
+        } catch (e) {
+          console.error('Midnight auto-reset failed:', e);
+        }
+        scheduleMidnightReset();
+      }, msUntilMidnight);
+    };
+
+    scheduleMidnightReset();
+    return () => clearTimeout(timeoutId);
+  }, [items]);
 
   // Subscribe directly to Cloud Firestore meal_slots collection for dynamic dropdown & filtering
   useEffect(() => {
@@ -176,6 +236,27 @@ export default function MenuManagementPage() {
     }
   };
 
+  const handleResetAllPortions = async () => {
+    if (!window.confirm('Reset all meal portions to 0 for today? This will clear the daily booked counts for all dishes.')) {
+      return;
+    }
+    setResettingPortions(true);
+    const todayStr = getTodayDateString();
+    try {
+      for (const item of items) {
+        await updateDoc(doc(db, 'menu_items', item.id), {
+          quantity_booked: 0,
+          last_booked_date: todayStr,
+        });
+      }
+      alert('✓ All meal portions have been successfully reset to 0!');
+    } catch (e: any) {
+      alert('Error resetting portions: ' + e.message);
+    } finally {
+      setResettingPortions(false);
+    }
+  };
+
   const handleSaveMenuItem = async (e: React.FormEvent) => {
     e.preventDefault();
     let finalImageUrl = imageUrl;
@@ -184,9 +265,11 @@ export default function MenuManagementPage() {
       finalImageUrl = await handleImageUpload(selectedFile);
     }
 
+    const todayStr = getTodayDateString();
     const payload = {
       meal_slot_id: slotId,
-      date: new Date().toISOString().split('T')[0],
+      date: todayStr,
+      last_booked_date: editingItem?.last_booked_date || todayStr,
       title,
       description,
       price: Number(price),
@@ -252,6 +335,15 @@ export default function MenuManagementPage() {
         </div>
 
         <div className="flex items-center gap-3">
+          <button
+            onClick={handleResetAllPortions}
+            disabled={resettingPortions}
+            className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs px-4 py-2.5 rounded-xl border border-slate-700 transition-all flex items-center gap-2"
+            title="Portions auto-reset daily at 12 AM. Click to manually reset all portions to 0 now."
+          >
+            <RefreshCw className={`h-4 w-4 text-emerald-400 ${resettingPortions ? 'animate-spin' : ''}`} />
+            <span>{resettingPortions ? 'Resetting...' : 'Reset Portions to 0'}</span>
+          </button>
           <button
             onClick={handleDuplicateLastWeek}
             className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs px-4 py-2.5 rounded-xl border border-slate-700 transition-all flex items-center gap-2"
@@ -367,7 +459,15 @@ export default function MenuManagementPage() {
 
                   <div className="pt-2 flex items-center justify-between text-xs text-slate-400">
                     <span>Slot: <strong className="text-orange-400 font-semibold">{slotName}</strong></span>
-                    <span>Portions: <strong className="text-emerald-400">{item.quantity_booked}/{item.max_quantity}</strong></span>
+                    {(() => {
+                      const todayStr = getTodayDateString();
+                      const bookedDate = item.last_booked_date || item.date;
+                      const isStale = Boolean(bookedDate && bookedDate < todayStr);
+                      const displayQty = isStale ? 0 : (item.quantity_booked || 0);
+                      return (
+                        <span>Portions: <strong className="text-emerald-400">{displayQty}/{item.max_quantity}</strong></span>
+                      );
+                    })()}
                   </div>
 
                   {/* Live Customer Star Rating Badge */}
