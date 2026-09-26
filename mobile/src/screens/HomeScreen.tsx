@@ -1023,9 +1023,6 @@ export default function HomeScreen({ navigation }: any) {
         {/* Explore AFoodoo 2x2 Grid */}
         <View style={styles.exploreSectionHeader}>
           <Text style={[styles.sectionTitle, { color: theme.textPrimary }]}>Explore AFoodoo</Text>
-          <TouchableOpacity onPress={() => navigation.navigate('Menu')} activeOpacity={0.7}>
-            <Text style={[styles.seeAllText, { color: theme.textMuted }]}>See All ›</Text>
-          </TouchableOpacity>
         </View>
 
         <View style={styles.gridRow}>

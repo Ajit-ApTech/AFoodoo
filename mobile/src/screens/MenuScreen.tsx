@@ -72,7 +72,6 @@ export default function MenuScreen({ navigation }: any) {
   const { theme, isDark } = useTheme();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [availableSlots, setAvailableSlots] = useState<any[]>([]);
 
   const activeSlot = useAppStore(state => state.activeSlot);
@@ -243,7 +242,6 @@ export default function MenuScreen({ navigation }: any) {
   };
 
   const renderItem = ({ item }: any) => {
-    const isExpanded = expandedId === item.id;
     const nowD = new Date();
     const todayStr = `${nowD.getFullYear()}-${String(nowD.getMonth() + 1).padStart(2, '0')}-${String(nowD.getDate()).padStart(2, '0')}`;
     const bookedDate = item.last_booked_date || item.date;
@@ -296,10 +294,7 @@ export default function MenuScreen({ navigation }: any) {
             <Text style={[styles.price, { color: theme.primary }]}>₹{item.price.toFixed(0)}</Text>
           </View>
 
-          <Text
-            style={[styles.description, { color: theme.textSecondary }]}
-            numberOfLines={isExpanded ? undefined : 2}
-          >
+          <Text style={[styles.description, { color: theme.textSecondary }]}>
             {item.description || 'Prepared fresh with high quality ingredients and traditional spices.'}
           </Text>
 
@@ -307,12 +302,6 @@ export default function MenuScreen({ navigation }: any) {
             <Text style={[styles.remainingText, { color: isSoldOut ? '#EF4444' : '#10B981' }]}>
               {isSoldOut ? '❌ Sold Out' : `🔥 ${remaining} portions remaining`}
             </Text>
-
-            <TouchableOpacity onPress={() => setExpandedId(isExpanded ? null : item.id)}>
-              <Text style={[styles.expandText, { color: theme.textMuted }]}>
-                {isExpanded ? 'Show less ▲' : 'Tap for details ▾'}
-              </Text>
-            </TouchableOpacity>
           </View>
 
           {/* Stepper & Book Meal / Add to Cart Row */}
