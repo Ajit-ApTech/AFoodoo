@@ -32,7 +32,7 @@
         "backgroundColor": "#0F172A"
       },
       "package": "com.afoodoo.app",
-      "versionCode": 2,
+      "versionCode": 3,
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
