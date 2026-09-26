@@ -8,6 +8,7 @@ import {
   Ticket,
   Plus,
   Trash2,
+  Pencil,
   Copy,
   Check,
   Percent,
@@ -22,6 +23,7 @@ export default function CouponsPage() {
   const [loading, setLoading] = useState(true);
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
+  const [editingCoupon, setEditingCoupon] = useState<Coupon | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
@@ -95,7 +97,33 @@ export default function CouponsPage() {
     }
   };
 
-  const handleCreateCoupon = async (e: React.FormEvent) => {
+  const handleOpenCreate = () => {
+    setEditingCoupon(null);
+    setFormCode('');
+    setFormDesc('');
+    setFormType('percentage');
+    setFormValue(20);
+    setFormMaxDiscount(50);
+    setFormMinOrder(99);
+    setFormIsActive(true);
+    setError('');
+    setShowModal(true);
+  };
+
+  const handleOpenEdit = (coupon: Coupon) => {
+    setEditingCoupon(coupon);
+    setFormCode(coupon.code);
+    setFormDesc(coupon.description || '');
+    setFormType(coupon.discount_type || 'percentage');
+    setFormValue(coupon.discount_value || 0);
+    setFormMaxDiscount(coupon.max_discount || 0);
+    setFormMinOrder(coupon.min_order_amount || 0);
+    setFormIsActive(coupon.is_active !== false);
+    setError('');
+    setShowModal(true);
+  };
+
+  const handleSaveCoupon = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanCode = formCode.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
     if (!cleanCode) {
@@ -103,7 +131,8 @@ export default function CouponsPage() {
       return;
     }
 
-    if (coupons.some(c => c.code === cleanCode)) {
+    // If creating a new coupon, ensure code is unique
+    if (!editingCoupon && coupons.some(c => c.code === cleanCode)) {
       alert(`Coupon code "${cleanCode}" already exists. Please choose a different code.`);
       return;
     }
@@ -112,36 +141,42 @@ export default function CouponsPage() {
     setError('');
 
     try {
-      const newCoupon: Coupon = {
-        id: cleanCode,
+      // Build safe coupon payload with ZERO undefined fields for Firestore
+      const couponPayload: any = {
+        id: editingCoupon ? editingCoupon.id : cleanCode,
         code: cleanCode,
-        description: formDesc.trim() || `${cleanCode} special promotional discount`,
+        description: formDesc.trim() || `${cleanCode} promotional offer`,
         discount_type: formType,
         discount_value: formType === 'free_delivery' ? 0 : Number(formValue) || 0,
-        max_discount: formType === 'percentage' && formMaxDiscount ? Number(formMaxDiscount) : undefined,
         min_order_amount: Number(formMinOrder) || 0,
         is_active: formIsActive,
-        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       };
 
-      const updatedList = [newCoupon, ...coupons];
-      await saveCouponsList(updatedList);
+      // Only add max_discount if percentage type and value exists
+      if (formType === 'percentage' && formMaxDiscount && Number(formMaxDiscount) > 0) {
+        couponPayload.max_discount = Number(formMaxDiscount);
+      }
+
+      if (editingCoupon) {
+        couponPayload.created_at = editingCoupon.created_at || new Date().toISOString();
+        const updatedList = coupons.map(c =>
+          c.id === editingCoupon.id ? (couponPayload as Coupon) : c
+        );
+        await saveCouponsList(updatedList);
+        setSuccessMsg(`Coupon "${cleanCode}" updated successfully!`);
+      } else {
+        couponPayload.created_at = new Date().toISOString();
+        const updatedList = [couponPayload as Coupon, ...coupons];
+        await saveCouponsList(updatedList);
+        setSuccessMsg(`Coupon "${cleanCode}" created successfully!`);
+      }
 
       setShowModal(false);
-      // Reset form
-      setFormCode('');
-      setFormDesc('');
-      setFormType('percentage');
-      setFormValue(20);
-      setFormMaxDiscount(50);
-      setFormMinOrder(99);
-      setFormIsActive(true);
-
-      setSuccessMsg(`Coupon "${cleanCode}" created successfully!`);
       setTimeout(() => setSuccessMsg(''), 3000);
     } catch (err: any) {
-      console.error('Error creating coupon:', err);
-      setError(`Failed to create coupon: ${err.message}`);
+      console.error('Error saving coupon:', err);
+      setError(`Failed to save coupon: ${err.message}`);
     } finally {
       setSaving(false);
     }
@@ -165,13 +200,13 @@ export default function CouponsPage() {
               </span>
             </h1>
             <p className="text-xs text-slate-400">
-              Create, toggle, and manage promo codes that customers can apply at checkout.
+              Create, edit, toggle, and manage promo codes that customers can apply at checkout.
             </p>
           </div>
         </div>
 
         <button
-          onClick={() => setShowModal(true)}
+          onClick={handleOpenCreate}
           className="flex items-center gap-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-slate-950 text-xs font-black py-2.5 px-4 rounded-xl shadow-lg shadow-orange-500/20 transition-all cursor-pointer"
         >
           <Plus className="h-4 w-4" />
@@ -224,7 +259,7 @@ export default function CouponsPage() {
           </div>
           <div className="flex items-center justify-center pt-2">
             <button
-              onClick={() => setShowModal(true)}
+              onClick={handleOpenCreate}
               className="bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold py-2.5 px-5 rounded-xl cursor-pointer"
             >
               + Create New Coupon
@@ -257,7 +292,7 @@ export default function CouponsPage() {
                       <button
                         onClick={() => handleCopy(coupon.code)}
                         title="Copy code"
-                        className="text-slate-400 hover:text-white p-1 rounded transition-colors"
+                        className="text-slate-400 hover:text-white p-1 rounded transition-colors cursor-pointer"
                       >
                         {copiedCode === coupon.code ? (
                           <Check className="h-3.5 w-3.5 text-emerald-400" />
@@ -334,19 +369,28 @@ export default function CouponsPage() {
                   </div>
                 </div>
 
-                {/* Bottom Actions */}
+                {/* Bottom Actions: Edit & Delete */}
                 <div className="flex items-center justify-between border-t border-slate-800/80 pt-3 mt-4">
                   <span className="text-[10px] text-slate-500 font-mono">
                     Code: {coupon.code}
                   </span>
 
-                  <button
-                    onClick={() => handleDelete(coupon.id, coupon.code)}
-                    className="text-slate-500 hover:text-red-400 p-1.5 rounded-lg hover:bg-red-500/10 transition-colors flex items-center gap-1 text-[11px] font-medium cursor-pointer"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                    Delete
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => handleOpenEdit(coupon)}
+                      className="text-slate-400 hover:text-amber-400 p-1.5 rounded-lg hover:bg-slate-800 transition-colors flex items-center gap-1 text-[11px] font-medium cursor-pointer"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                      Edit
+                    </button>
+                    <button
+                      onClick={() => handleDelete(coupon.id, coupon.code)}
+                      className="text-slate-500 hover:text-red-400 p-1.5 rounded-lg hover:bg-red-500/10 transition-colors flex items-center gap-1 text-[11px] font-medium cursor-pointer"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      Delete
+                    </button>
+                  </div>
                 </div>
               </div>
             );
@@ -354,24 +398,26 @@ export default function CouponsPage() {
         </div>
       )}
 
-      {/* Create Coupon Modal */}
+      {/* Create / Edit Coupon Modal */}
       {showModal && (
         <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg p-6 space-y-5 shadow-2xl relative">
             <div className="flex items-center justify-between border-b border-slate-800 pb-4">
               <div className="flex items-center gap-2">
                 <Ticket className="h-5 w-5 text-amber-400" />
-                <h3 className="text-base font-extrabold text-white">Create New Coupon</h3>
+                <h3 className="text-base font-extrabold text-white">
+                  {editingCoupon ? `Edit Coupon: ${editingCoupon.code}` : 'Create New Coupon'}
+                </h3>
               </div>
               <button
                 onClick={() => setShowModal(false)}
-                className="text-slate-400 hover:text-white p-1 rounded-lg"
+                className="text-slate-400 hover:text-white p-1 rounded-lg cursor-pointer"
               >
                 <X className="h-5 w-5" />
               </button>
             </div>
 
-            <form onSubmit={handleCreateCoupon} className="space-y-4">
+            <form onSubmit={handleSaveCoupon} className="space-y-4">
               <div>
                 <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">
                   Coupon Code *
@@ -381,9 +427,19 @@ export default function CouponsPage() {
                   required
                   placeholder="e.g. WELCOME100, SUMMER20, FREEDEL"
                   value={formCode}
+                  disabled={!!editingCoupon}
                   onChange={e => setFormCode(e.target.value.toUpperCase())}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-white uppercase font-mono tracking-wider focus:outline-none focus:border-amber-500"
+                  className={`w-full border rounded-xl px-3.5 py-2.5 text-xs uppercase font-mono tracking-wider focus:outline-none ${
+                    editingCoupon
+                      ? 'bg-slate-900 border-slate-800 text-slate-400 cursor-not-allowed'
+                      : 'bg-slate-950 border-slate-800 text-white focus:border-amber-500'
+                  }`}
                 />
+                {editingCoupon && (
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    Coupon code cannot be renamed once created.
+                  </p>
+                )}
               </div>
 
               <div>
@@ -470,9 +526,9 @@ export default function CouponsPage() {
                       </label>
                       <input
                         type="number"
-                        min={1}
+                        min={0}
                         placeholder="e.g. 50"
-                        value={formMaxDiscount}
+                        value={formMaxDiscount || ''}
                         onChange={e => setFormMaxDiscount(parseInt(e.target.value) || 0)}
                         className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-amber-500"
                       />
@@ -498,7 +554,7 @@ export default function CouponsPage() {
 
                 <div>
                   <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">
-                    Initial Status
+                    Status
                   </label>
                   <button
                     type="button"
@@ -509,7 +565,7 @@ export default function CouponsPage() {
                         : 'bg-slate-950 border-slate-800 text-slate-400'
                     }`}
                   >
-                    {formIsActive ? '● Active Immediately' : '○ Paused (Inactive)'}
+                    {formIsActive ? '● Active' : '○ Paused (Inactive)'}
                   </button>
                 </div>
               </div>
@@ -534,7 +590,13 @@ export default function CouponsPage() {
                   disabled={saving}
                   className="px-5 py-2.5 rounded-xl text-xs font-black bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 hover:from-amber-600 hover:to-orange-600 shadow-md shadow-orange-500/20 disabled:opacity-50 transition-all cursor-pointer"
                 >
-                  {saving ? 'Creating...' : 'Save & Launch Coupon'}
+                  {saving
+                    ? editingCoupon
+                      ? 'Saving...'
+                      : 'Creating...'
+                    : editingCoupon
+                    ? 'Save Changes'
+                    : 'Save & Launch Coupon'}
                 </button>
               </div>
             </form>
