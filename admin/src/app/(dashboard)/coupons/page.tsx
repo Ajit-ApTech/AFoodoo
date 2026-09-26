@@ -2,15 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { db } from '../../../lib/firebase';
-import {
-  collection,
-  getDocs,
-  doc,
-  setDoc,
-  deleteDoc,
-  updateDoc,
-  serverTimestamp,
-} from 'firebase/firestore';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { Coupon } from '../../../types';
 import {
   Ticket,
@@ -20,55 +12,10 @@ import {
   Check,
   Percent,
   Truck,
-  IndianRupee,
-  Sparkles,
   CheckCircle2,
   X,
   AlertCircle,
-  Clock,
-  ArrowUpDown,
 } from 'lucide-react';
-
-const INITIAL_COUPONS: Omit<Coupon, 'id'>[] = [
-  {
-    code: 'AFOODOO50',
-    description: '50% off on your order up to ₹50 discount',
-    discount_type: 'percentage',
-    discount_value: 50,
-    max_discount: 50,
-    min_order_amount: 99,
-    is_active: true,
-    created_at: new Date().toISOString(),
-  },
-  {
-    code: 'FIRST50',
-    description: 'Welcome offer: 50% discount up to ₹50 for first-time customers',
-    discount_type: 'percentage',
-    discount_value: 50,
-    max_discount: 50,
-    min_order_amount: 99,
-    is_active: true,
-    created_at: new Date().toISOString(),
-  },
-  {
-    code: 'FREEDEL',
-    description: '100% Free delivery on all orders above ₹149',
-    discount_type: 'free_delivery',
-    discount_value: 0,
-    min_order_amount: 149,
-    is_active: true,
-    created_at: new Date().toISOString(),
-  },
-  {
-    code: 'FLAT30',
-    description: 'Flat ₹30 off on orders above ₹199',
-    discount_type: 'flat',
-    discount_value: 30,
-    min_order_amount: 199,
-    is_active: true,
-    created_at: new Date().toISOString(),
-  },
-];
 
 export default function CouponsPage() {
   const [coupons, setCoupons] = useState<Coupon[]>([]);
@@ -91,12 +38,14 @@ export default function CouponsPage() {
   const fetchCoupons = async () => {
     try {
       setLoading(true);
-      const snap = await getDocs(collection(db, 'coupons'));
-      const list: Coupon[] = snap.docs.map(d => ({
-        id: d.id,
-        ...(d.data() as Omit<Coupon, 'id'>),
-      }));
-      setCoupons(list);
+      setError('');
+      const snap = await getDoc(doc(db, 'settings', 'coupons_config'));
+      if (snap.exists()) {
+        const data = snap.data();
+        setCoupons(Array.isArray(data.list) ? data.list : []);
+      } else {
+        setCoupons([]);
+      }
     } catch (err: any) {
       console.error('Error loading coupons:', err);
       setError('Could not load coupons from database.');
@@ -109,6 +58,14 @@ export default function CouponsPage() {
     fetchCoupons();
   }, []);
 
+  const saveCouponsList = async (updatedList: Coupon[]) => {
+    await setDoc(doc(db, 'settings', 'coupons_config'), {
+      list: updatedList,
+      updated_at: new Date().toISOString(),
+    });
+    setCoupons(updatedList);
+  };
+
   const handleCopy = (code: string) => {
     navigator.clipboard.writeText(code);
     setCopiedCode(code);
@@ -117,13 +74,10 @@ export default function CouponsPage() {
 
   const handleToggleActive = async (coupon: Coupon) => {
     try {
-      const newStatus = !coupon.is_active;
-      await updateDoc(doc(db, 'coupons', coupon.id), {
-        is_active: newStatus,
-      });
-      setCoupons(prev =>
-        prev.map(c => (c.id === coupon.id ? { ...c, is_active: newStatus } : c))
+      const updatedList = coupons.map(c =>
+        c.id === coupon.id ? { ...c, is_active: !c.is_active } : c
       );
+      await saveCouponsList(updatedList);
     } catch (err: any) {
       alert(`Failed to update status: ${err.message}`);
     }
@@ -132,26 +86,12 @@ export default function CouponsPage() {
   const handleDelete = async (couponId: string, code: string) => {
     if (!confirm(`Are you sure you want to permanently delete coupon "${code}"?`)) return;
     try {
-      await deleteDoc(doc(db, 'coupons', couponId));
-      setCoupons(prev => prev.filter(c => c.id !== couponId));
+      const updatedList = coupons.filter(c => c.id !== couponId);
+      await saveCouponsList(updatedList);
+      setSuccessMsg(`Coupon "${code}" deleted successfully.`);
+      setTimeout(() => setSuccessMsg(''), 3000);
     } catch (err: any) {
       alert(`Failed to delete coupon: ${err.message}`);
-    }
-  };
-
-  const handleSeedDefaults = async () => {
-    try {
-      setSaving(true);
-      for (const item of INITIAL_COUPONS) {
-        await setDoc(doc(db, 'coupons', item.code), item);
-      }
-      setSuccessMsg('Default initial coupons created successfully!');
-      setTimeout(() => setSuccessMsg(''), 3000);
-      await fetchCoupons();
-    } catch (err: any) {
-      alert(`Error initializing coupons: ${err.message}`);
-    } finally {
-      setSaving(false);
     }
   };
 
@@ -163,11 +103,17 @@ export default function CouponsPage() {
       return;
     }
 
+    if (coupons.some(c => c.code === cleanCode)) {
+      alert(`Coupon code "${cleanCode}" already exists. Please choose a different code.`);
+      return;
+    }
+
     setSaving(true);
     setError('');
 
     try {
-      const newCouponData: Omit<Coupon, 'id'> = {
+      const newCoupon: Coupon = {
+        id: cleanCode,
         code: cleanCode,
         description: formDesc.trim() || `${cleanCode} special promotional discount`,
         discount_type: formType,
@@ -178,7 +124,8 @@ export default function CouponsPage() {
         created_at: new Date().toISOString(),
       };
 
-      await setDoc(doc(db, 'coupons', cleanCode), newCouponData);
+      const updatedList = [newCoupon, ...coupons];
+      await saveCouponsList(updatedList);
 
       setShowModal(false);
       // Reset form
@@ -192,7 +139,6 @@ export default function CouponsPage() {
 
       setSuccessMsg(`Coupon "${cleanCode}" created successfully!`);
       setTimeout(() => setSuccessMsg(''), 3000);
-      await fetchCoupons();
     } catch (err: any) {
       console.error('Error creating coupon:', err);
       setError(`Failed to create coupon: ${err.message}`);
@@ -224,26 +170,13 @@ export default function CouponsPage() {
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          {coupons.length === 0 && !loading && (
-            <button
-              onClick={handleSeedDefaults}
-              disabled={saving}
-              className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold py-2.5 px-4 rounded-xl border border-slate-700 transition-colors"
-            >
-              <Sparkles className="h-4 w-4 text-amber-400" />
-              Load Default Coupons
-            </button>
-          )}
-
-          <button
-            onClick={() => setShowModal(true)}
-            className="flex items-center gap-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-slate-950 text-xs font-black py-2.5 px-4 rounded-xl shadow-lg shadow-orange-500/20 transition-all cursor-pointer"
-          >
-            <Plus className="h-4 w-4" />
-            Create New Coupon
-          </button>
-        </div>
+        <button
+          onClick={() => setShowModal(true)}
+          className="flex items-center gap-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-slate-950 text-xs font-black py-2.5 px-4 rounded-xl shadow-lg shadow-orange-500/20 transition-all cursor-pointer"
+        >
+          <Plus className="h-4 w-4" />
+          Create New Coupon
+        </button>
       </div>
 
       {/* Success Notification */}
@@ -286,21 +219,15 @@ export default function CouponsPage() {
           <div>
             <h3 className="text-sm font-bold text-white">No Coupons Configured Yet</h3>
             <p className="text-xs text-slate-400 mt-1">
-              Create your first promotional discount coupon or initialize standard welcome offers.
+              Click the button below to create your first promotional discount coupon.
             </p>
           </div>
-          <div className="flex items-center justify-center gap-3 pt-2">
-            <button
-              onClick={handleSeedDefaults}
-              className="bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold py-2 px-4 rounded-xl border border-slate-700"
-            >
-              Load Default Coupons
-            </button>
+          <div className="flex items-center justify-center pt-2">
             <button
               onClick={() => setShowModal(true)}
-              className="bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold py-2 px-4 rounded-xl"
+              className="bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold py-2.5 px-5 rounded-xl cursor-pointer"
             >
-              Create Coupon
+              + Create New Coupon
             </button>
           </div>
         </div>
@@ -343,7 +270,7 @@ export default function CouponsPage() {
                     <button
                       type="button"
                       onClick={() => handleToggleActive(coupon)}
-                      className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full border transition-all ${
+                      className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full border transition-all cursor-pointer ${
                         coupon.is_active
                           ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400'
                           : 'bg-slate-800 border-slate-700 text-slate-400'
@@ -410,12 +337,12 @@ export default function CouponsPage() {
                 {/* Bottom Actions */}
                 <div className="flex items-center justify-between border-t border-slate-800/80 pt-3 mt-4">
                   <span className="text-[10px] text-slate-500 font-mono">
-                    ID: {coupon.id.slice(0, 10)}
+                    Code: {coupon.code}
                   </span>
 
                   <button
                     onClick={() => handleDelete(coupon.id, coupon.code)}
-                    className="text-slate-500 hover:text-red-400 p-1.5 rounded-lg hover:bg-red-500/10 transition-colors flex items-center gap-1 text-[11px] font-medium"
+                    className="text-slate-500 hover:text-red-400 p-1.5 rounded-lg hover:bg-red-500/10 transition-colors flex items-center gap-1 text-[11px] font-medium cursor-pointer"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                     Delete
@@ -481,7 +408,7 @@ export default function CouponsPage() {
                   <button
                     type="button"
                     onClick={() => setFormType('percentage')}
-                    className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
+                    className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                       formType === 'percentage'
                         ? 'bg-amber-500 text-slate-950 border-amber-500'
                         : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
@@ -494,7 +421,7 @@ export default function CouponsPage() {
                   <button
                     type="button"
                     onClick={() => setFormType('flat')}
-                    className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
+                    className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                       formType === 'flat'
                         ? 'bg-amber-500 text-slate-950 border-amber-500'
                         : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
@@ -507,7 +434,7 @@ export default function CouponsPage() {
                   <button
                     type="button"
                     onClick={() => setFormType('free_delivery')}
-                    className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
+                    className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                       formType === 'free_delivery'
                         ? 'bg-amber-500 text-slate-950 border-amber-500'
                         : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
@@ -576,7 +503,7 @@ export default function CouponsPage() {
                   <button
                     type="button"
                     onClick={() => setFormIsActive(!formIsActive)}
-                    className={`w-full py-2.5 px-3.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 mt-0.5 transition-all ${
+                    className={`w-full py-2.5 px-3.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 mt-0.5 transition-all cursor-pointer ${
                       formIsActive
                         ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400'
                         : 'bg-slate-950 border-slate-800 text-slate-400'
@@ -598,7 +525,7 @@ export default function CouponsPage() {
                 <button
                   type="button"
                   onClick={() => setShowModal(false)}
-                  className="px-4 py-2.5 rounded-xl text-xs font-bold text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                  className="px-4 py-2.5 rounded-xl text-xs font-bold text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
                 >
                   Cancel
                 </button>

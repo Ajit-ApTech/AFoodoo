@@ -267,87 +267,79 @@ export default function BookingScreen({ route, navigation }: any) {
     setCouponMsg('');
 
     try {
-      const { collection, query, where, getDocs } = require('firebase/firestore');
+      const { doc, getDoc, collection, query, where, getDocs } = require('firebase/firestore');
       const { firestore } = require('../firebaseConfig');
-      const q = query(collection(firestore, 'coupons'), where('code', '==', code));
-      const snap = await getDocs(q);
 
-      if (!snap.empty) {
-        const couponDoc = snap.docs[0].data();
-        if (couponDoc.is_active === false) {
-          setCouponMsg('This coupon is currently inactive.');
-          setCouponDiscount(0);
-          setCouponApplied(false);
-          setAppliedCouponCode('');
-          setVerifyingCoupon(false);
-          return;
-        }
+      let targetCoupon: any = null;
 
-        if (couponDoc.min_order_amount && subtotal < Number(couponDoc.min_order_amount)) {
-          setCouponMsg(`Min order of ₹${couponDoc.min_order_amount} required for this coupon.`);
-          setCouponDiscount(0);
-          setCouponApplied(false);
-          setAppliedCouponCode('');
-          setVerifyingCoupon(false);
-          return;
+      // 1. Check in settings/coupons_config (managed via admin panel)
+      try {
+        const configSnap = await getDoc(doc(firestore, 'settings', 'coupons_config'));
+        if (configSnap.exists()) {
+          const list = configSnap.data()?.list || [];
+          targetCoupon = list.find((c: any) => c.code?.trim().toUpperCase() === code) || null;
         }
+      } catch (_) {}
 
-        let discount = 0;
-        if (couponDoc.discount_type === 'percentage') {
-          const pct = Number(couponDoc.discount_value) || 0;
-          const rawDiscount = Math.floor(subtotal * (pct / 100));
-          discount = couponDoc.max_discount ? Math.min(rawDiscount, Number(couponDoc.max_discount)) : rawDiscount;
-        } else if (couponDoc.discount_type === 'flat') {
-          discount = Math.min(subtotal, Number(couponDoc.discount_value) || 0);
-        } else if (couponDoc.discount_type === 'free_delivery') {
-          discount = finalDeliveryFee;
-        }
-
-        setCouponDiscount(discount);
-        setCouponApplied(true);
-        setAppliedCouponCode(code);
-        setCouponMsg(`✓ Coupon ${code} applied! Saved ₹${discount}`);
-      } else {
-        // Fallback for default promotional codes
-        if (code === 'AFOODOO50' || code === 'FIRST50') {
-          const discount = Math.min(50, Math.floor(subtotal * 0.5));
-          setCouponDiscount(discount);
-          setCouponApplied(true);
-          setAppliedCouponCode(code);
-          setCouponMsg(`✓ Coupon ${code} applied! Saved ₹${discount}`);
-        } else if (code === 'FREE' || code === 'FREEDEL') {
-          setCouponDiscount(finalDeliveryFee);
-          setCouponApplied(true);
-          setAppliedCouponCode(code);
-          setCouponMsg(`✓ Free Delivery applied! Saved ₹${finalDeliveryFee}`);
-        } else if (code === 'FLAT30') {
-          const discount = Math.min(subtotal, 30);
-          setCouponDiscount(discount);
-          setCouponApplied(true);
-          setAppliedCouponCode(code);
-          setCouponMsg(`✓ Coupon FLAT30 applied! Saved ₹${discount}`);
-        } else {
-          setCouponMsg('Invalid coupon code.');
-          setCouponDiscount(0);
-          setCouponApplied(false);
-          setAppliedCouponCode('');
-        }
+      // 2. Check in top-level coupons collection if not found
+      if (!targetCoupon) {
+        try {
+          const q = query(collection(firestore, 'coupons'), where('code', '==', code));
+          const snap = await getDocs(q);
+          if (!snap.empty) {
+            targetCoupon = snap.docs[0].data();
+          }
+        } catch (_) {}
       }
-    } catch (e) {
-      if (code === 'AFOODOO50' || code === 'FIRST50') {
-        const discount = Math.min(50, Math.floor(subtotal * 0.5));
-        setCouponDiscount(discount);
-        setCouponApplied(true);
-        setAppliedCouponCode(code);
-        setCouponMsg(`✓ Coupon ${code} applied! Saved ₹${discount}`);
-      } else if (code === 'FREE' || code === 'FREEDEL') {
-        setCouponDiscount(finalDeliveryFee);
-        setCouponApplied(true);
-        setAppliedCouponCode(code);
-        setCouponMsg(`✓ Free Delivery applied! Saved ₹${finalDeliveryFee}`);
-      } else {
-        setCouponMsg('Could not verify coupon.');
+
+      if (!targetCoupon) {
+        setCouponMsg('Invalid coupon code.');
+        setCouponDiscount(0);
+        setCouponApplied(false);
+        setAppliedCouponCode('');
+        setVerifyingCoupon(false);
+        return;
       }
+
+      if (targetCoupon.is_active === false) {
+        setCouponMsg('This coupon is currently inactive.');
+        setCouponDiscount(0);
+        setCouponApplied(false);
+        setAppliedCouponCode('');
+        setVerifyingCoupon(false);
+        return;
+      }
+
+      if (targetCoupon.min_order_amount && subtotal < Number(targetCoupon.min_order_amount)) {
+        setCouponMsg(`Min order of ₹${targetCoupon.min_order_amount} required for this coupon.`);
+        setCouponDiscount(0);
+        setCouponApplied(false);
+        setAppliedCouponCode('');
+        setVerifyingCoupon(false);
+        return;
+      }
+
+      let discount = 0;
+      if (targetCoupon.discount_type === 'percentage') {
+        const pct = Number(targetCoupon.discount_value) || 0;
+        const rawDiscount = Math.floor(subtotal * (pct / 100));
+        discount = targetCoupon.max_discount ? Math.min(rawDiscount, Number(targetCoupon.max_discount)) : rawDiscount;
+      } else if (targetCoupon.discount_type === 'flat') {
+        discount = Math.min(subtotal, Number(targetCoupon.discount_value) || 0);
+      } else if (targetCoupon.discount_type === 'free_delivery') {
+        discount = finalDeliveryFee;
+      }
+
+      setCouponDiscount(discount);
+      setCouponApplied(true);
+      setAppliedCouponCode(code);
+      setCouponMsg(`✓ Coupon ${code} applied! Saved ₹${discount}`);
+    } catch (e: any) {
+      console.log('Error verifying coupon:', e);
+      setCouponMsg('Could not verify coupon. Please check connection.');
+      setCouponDiscount(0);
+      setCouponApplied(false);
+      setAppliedCouponCode('');
     } finally {
       setVerifyingCoupon(false);
     }
@@ -1102,7 +1094,7 @@ export default function BookingScreen({ route, navigation }: any) {
                   setCouponMsg('');
                 }
               }}
-              placeholder="Enter coupon code (e.g. AFOODOO50)"
+              placeholder="Enter coupon code"
               placeholderTextColor={theme.textMuted}
               autoCapitalize="characters"
               editable={!couponApplied && !verifyingCoupon}
