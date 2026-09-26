@@ -19,6 +19,7 @@ import { useAppStore } from '../store/appStore';
 import { useTheme, ThemeMode } from '../theme/ThemeContext';
 import { DeliveryAddress } from '../types';
 import { BottomNavBar, BottomTabType } from '../components/BottomNavBar';
+import { haversineDistance } from '../utils/geo';
 
 export default function ProfileScreen({ navigation }: any) {
   const user = useAppStore(state => state.user);
@@ -36,6 +37,11 @@ export default function ProfileScreen({ navigation }: any) {
   const [supportPhone, setSupportPhone] = useState('+91 98765 43210');
   const [supportEmail, setSupportEmail] = useState('support@afoodoo.com');
   const [supportHours, setSupportHours] = useState('8:00 AM - 10:00 PM Daily');
+
+  // Kitchen location & delivery radius from Firestore
+  const [kitchenLat, setKitchenLat] = useState<number | null>(null);
+  const [kitchenLng, setKitchenLng] = useState<number | null>(null);
+  const [maxDeliveryRadiusKm, setMaxDeliveryRadiusKm] = useState<number>(25);
 
   // Add Address Modal state
   const [showAddModal, setShowAddModal] = useState(false);
@@ -92,6 +98,9 @@ export default function ProfileScreen({ navigation }: any) {
           if (d.support_phone) setSupportPhone(d.support_phone);
           if (d.support_email) setSupportEmail(d.support_email);
           if (d.support_hours) setSupportHours(d.support_hours);
+          if (d.kitchen_lat != null) setKitchenLat(Number(d.kitchen_lat));
+          if (d.kitchen_lng != null) setKitchenLng(Number(d.kitchen_lng));
+          if (d.max_delivery_radius_km != null) setMaxDeliveryRadiusKm(Number(d.max_delivery_radius_km));
         }
       });
       return unsub;
@@ -240,6 +249,36 @@ export default function ProfileScreen({ navigation }: any) {
 
     setSavingAddress(true);
 
+    let targetLat = detectedLat;
+    let targetLng = detectedLng;
+    let targetDist: number | undefined = undefined;
+
+    // If GPS coordinates were not auto-filled, attempt to geocode street + city + zip
+    if (targetLat == null || targetLng == null) {
+      try {
+        const Location = require('expo-location');
+        const query = [line1.trim(), city.trim(), zip.trim()].filter(Boolean).join(', ');
+        const results = await Location.geocodeAsync(query);
+        if (results && results.length > 0) {
+          targetLat = results[0].latitude;
+          targetLng = results[0].longitude;
+        }
+      } catch (geoErr) {
+        console.log('Notice geocoding in profile address:', geoErr);
+      }
+    }
+
+    if (kitchenLat && kitchenLng && (kitchenLat !== 0 || kitchenLng !== 0) && targetLat != null && targetLng != null) {
+      const dist = haversineDistance(kitchenLat, kitchenLng, targetLat, targetLng);
+      targetDist = Math.round(dist * 10) / 10;
+      if (targetDist > maxDeliveryRadiusKm) {
+        Alert.alert(
+          'Address Outside Delivery Zone ⚠️',
+          `This address is approximately ${targetDist} km away from AFoodoo Kitchen (our max delivery radius is ${maxDeliveryRadiusKm} km).\n\nPlease note: Meal orders cannot be delivered to locations outside our delivery radius.`
+        );
+      }
+    }
+
     const newAddress: DeliveryAddress = {
       id: `addr_${Date.now()}`,
       label,
@@ -250,8 +289,9 @@ export default function ProfileScreen({ navigation }: any) {
       city: city.trim(),
       state: '',
       zip: zip.trim(),
-      latitude: detectedLat ?? undefined,
-      longitude: detectedLng ?? undefined,
+      latitude: targetLat ?? undefined,
+      longitude: targetLng ?? undefined,
+      distance_km: targetDist,
     };
 
     const currentAddresses = user?.addresses || [];

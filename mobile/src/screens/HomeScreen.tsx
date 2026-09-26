@@ -491,6 +491,7 @@ export default function HomeScreen({ navigation }: any) {
           delivery_address: deliveryAddressObj,
           delivery_lat: deliveryLat,
           delivery_lng: deliveryLng,
+          delivery_distance_km: savedAddr?.distance_km ?? null,
           maps_link: mapsLink,
           otp_code: otpCode,
           menu_title: dishName,

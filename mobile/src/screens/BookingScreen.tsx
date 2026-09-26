@@ -59,6 +59,13 @@ export default function BookingScreen({ route, navigation }: any) {
   const [locating, setLocating] = useState(false);
   const [isEditingAddress, setIsEditingAddress] = useState(false);
 
+  // Kitchen location & delivery radius (synced from Cloud Firestore settings/delivery_config)
+  const [kitchenLat, setKitchenLat] = useState<number | null>(null);
+  const [kitchenLng, setKitchenLng] = useState<number | null>(null);
+  const [maxDeliveryRadiusKm, setMaxDeliveryRadiusKm] = useState<number>(25);
+  const [deliveryDistanceKm, setDeliveryDistanceKm] = useState<number | null>(null);
+  const [isResolvingLocation, setIsResolvingLocation] = useState(false);
+
   // Delivery instructions
   const [deliveryInstructions, setDeliveryInstructions] = useState('');
 
@@ -97,11 +104,108 @@ export default function BookingScreen({ route, navigation }: any) {
           if (d.enable_cod != null) setEnableCod(d.enable_cod);
           if (d.delivery_fee != null) setDeliveryFee(Number(d.delivery_fee));
           if (d.platform_fee != null) setPlatformFee(Number(d.platform_fee));
+          if (d.kitchen_lat != null) setKitchenLat(Number(d.kitchen_lat));
+          if (d.kitchen_lng != null) setKitchenLng(Number(d.kitchen_lng));
+          if (d.max_delivery_radius_km != null) setMaxDeliveryRadiusKm(Number(d.max_delivery_radius_km));
         }
       });
       return unsub;
     } catch (e) {}
   }, []);
+
+  // Helper to geocode address if manual coordinates are missing
+  const resolveAddressCoordinates = async (
+    targetLine?: string,
+    targetCity?: string,
+    targetZip?: string
+  ): Promise<{ lat: number; lng: number } | null> => {
+    if (detectedLat != null && detectedLng != null) {
+      return { lat: detectedLat, lng: detectedLng };
+    }
+    const lineToUse = targetLine !== undefined ? targetLine : addressLine1;
+    const cityToUse = targetCity !== undefined ? targetCity : city;
+    const zipToUse = targetZip !== undefined ? targetZip : pincode;
+    const query = [lineToUse, cityToUse, zipToUse].filter(Boolean).join(', ');
+    if (!query.trim()) return null;
+
+    try {
+      const Location = require('expo-location');
+      const results = await Location.geocodeAsync(query);
+      if (results && results.length > 0) {
+        const { latitude, longitude } = results[0];
+        setDetectedLat(latitude);
+        setDetectedLng(longitude);
+        return { lat: latitude, lng: longitude };
+      }
+    } catch (e) {
+      console.log('Notice resolving address coordinates:', e);
+    }
+    return null;
+  };
+
+  // Real-time calculation of distance from AFoodoo Kitchen
+  useEffect(() => {
+    let isCancelled = false;
+    const calculateDistance = async () => {
+      if (!kitchenLat || !kitchenLng || (kitchenLat === 0 && kitchenLng === 0)) {
+        setDeliveryDistanceKm(null);
+        return;
+      }
+
+      if (detectedLat != null && detectedLng != null) {
+        const dist = haversineDistance(kitchenLat, kitchenLng, detectedLat, detectedLng);
+        if (!isCancelled) setDeliveryDistanceKm(Math.round(dist * 10) / 10);
+        return;
+      }
+
+      // If user is not currently actively editing fields, try to geocode in background
+      if (!isEditingAddress && addressLine1.trim()) {
+        try {
+          setIsResolvingLocation(true);
+          const Location = require('expo-location');
+          const query = [addressLine1, city, pincode].filter(Boolean).join(', ');
+          const results = await Location.geocodeAsync(query);
+          if (!isCancelled && results && results.length > 0) {
+            const { latitude, longitude } = results[0];
+            setDetectedLat(latitude);
+            setDetectedLng(longitude);
+            const dist = haversineDistance(kitchenLat, kitchenLng, latitude, longitude);
+            setDeliveryDistanceKm(Math.round(dist * 10) / 10);
+          }
+        } catch (_) {
+        } finally {
+          if (!isCancelled) setIsResolvingLocation(false);
+        }
+      }
+    };
+
+    calculateDistance();
+    return () => {
+      isCancelled = true;
+    };
+  }, [kitchenLat, kitchenLng, detectedLat, detectedLng, addressLine1, city, pincode, isEditingAddress]);
+
+  // Reset coordinates if user manually changes address fields
+  const handleAddressLineChange = (val: string) => {
+    setAddressLine1(val);
+    setDetectedLat(null);
+    setDetectedLng(null);
+    setDeliveryDistanceKm(null);
+  };
+
+  const handleCityChange = (val: string) => {
+    setCity(val);
+    setDetectedLat(null);
+    setDetectedLng(null);
+    setDeliveryDistanceKm(null);
+  };
+
+  const handlePincodeChange = (val: string) => {
+    setPincode(val);
+    setDetectedLat(null);
+    setDetectedLng(null);
+    setDeliveryDistanceKm(null);
+  };
 
   // Items in checkout: either cart items or route item fallback
   const checkoutItems =
@@ -167,6 +271,18 @@ export default function BookingScreen({ route, navigation }: any) {
       const lng = position.coords.longitude;
       setDetectedLat(lat);
       setDetectedLng(lng);
+
+      if (kitchenLat && kitchenLng && (kitchenLat !== 0 || kitchenLng !== 0)) {
+        const dist = haversineDistance(kitchenLat, kitchenLng, lat, lng);
+        const roundedDist = Math.round(dist * 10) / 10;
+        setDeliveryDistanceKm(roundedDist);
+        if (roundedDist > maxDeliveryRadiusKm) {
+          Alert.alert(
+            'Outside Delivery Zone ⚠️',
+            `Your detected location is ${roundedDist} km away from AFoodoo Kitchen. Our maximum delivery radius is ${maxDeliveryRadiusKm} km.`
+          );
+        }
+      }
 
       const [geo] = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
       if (geo) {
@@ -234,6 +350,10 @@ export default function BookingScreen({ route, navigation }: any) {
           meal_slot_id: pendingUpiPayload.slotId,
           slot_name: activeSlot?.name || 'Lunch Special',
           delivery_address: pendingUpiPayload.deliveryAddress,
+          delivery_lat: pendingUpiPayload.deliveryLat ?? null,
+          delivery_lng: pendingUpiPayload.deliveryLng ?? null,
+          delivery_distance_km: pendingUpiPayload.deliveryDistanceKm ?? null,
+          maps_link: pendingUpiPayload.mapsLink ?? null,
           receiver_name: pendingUpiPayload.receiverName,
           receiver_phone: pendingUpiPayload.receiverPhone,
           instructions: deliveryInstructions,
@@ -318,6 +438,48 @@ export default function BookingScreen({ route, navigation }: any) {
       return;
     }
 
+    // --- Strict Delivery Range & Location Verification ---
+    let targetLat = detectedLat;
+    let targetLng = detectedLng;
+    let targetDist = deliveryDistanceKm;
+
+    if (kitchenLat != null && kitchenLng != null && (kitchenLat !== 0 || kitchenLng !== 0)) {
+      if (targetLat == null || targetLng == null) {
+        setSubmitting(true);
+        const resolved = await resolveAddressCoordinates(addressLine1, city, pincode);
+        setSubmitting(false);
+        if (resolved) {
+          targetLat = resolved.lat;
+          targetLng = resolved.lng;
+        }
+      }
+
+      if (targetLat == null || targetLng == null) {
+        Alert.alert(
+          'Location Verification Required 📍',
+          'We could not verify your exact map coordinates for delivery. Please tap "Detect My Location" or ensure your street and city are valid so we can verify you are within our delivery range.',
+          [
+            { text: 'Detect My Location', onPress: handleDetectLocation },
+            { text: 'Cancel', style: 'cancel' },
+          ]
+        );
+        return;
+      }
+
+      const computedDist = Math.round(haversineDistance(kitchenLat, kitchenLng, targetLat, targetLng) * 10) / 10;
+      targetDist = computedDist;
+      setDeliveryDistanceKm(computedDist);
+
+      if (computedDist > maxDeliveryRadiusKm) {
+        Alert.alert(
+          'Outside Delivery Range 🚫',
+          `Sorry, this delivery address is approximately ${computedDist} km away from AFoodoo Kitchen.\n\nOur maximum delivery radius is ${maxDeliveryRadiusKm} km. Orders cannot be booked outside our delivery zone.`,
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+    }
+
     if (paymentMethod === 'wallet' && !isWalletSufficient) {
       Alert.alert(
         'Insufficient Wallet Balance',
@@ -338,8 +500,9 @@ export default function BookingScreen({ route, navigation }: any) {
       landmark: landmark.trim(),
       city: city.trim(),
       zip: pincode.trim(),
-      latitude: detectedLat ?? undefined,
-      longitude: detectedLng ?? undefined,
+      latitude: targetLat ?? undefined,
+      longitude: targetLng ?? undefined,
+      distance_km: targetDist ?? undefined,
     };
 
     const devicePushToken = (await getCachedPushToken()) || (user as any)?.expo_push_token || '';
@@ -352,6 +515,10 @@ export default function BookingScreen({ route, navigation }: any) {
         receiverPhone: receiverPhone.trim(),
         slotId,
         deliveryAddress,
+        deliveryLat: targetLat ?? null,
+        deliveryLng: targetLng ?? null,
+        deliveryDistanceKm: targetDist ?? null,
+        mapsLink: targetLat && targetLng ? buildMapsLink(targetLat, targetLng) : null,
       });
       setShowUpiModal(true);
       return;
@@ -402,10 +569,11 @@ export default function BookingScreen({ route, navigation }: any) {
         updated_at: new Date().toISOString(),
       };
 
-      if (detectedLat != null) orderData.delivery_lat = detectedLat;
-      if (detectedLng != null) orderData.delivery_lng = detectedLng;
-      if (detectedLat != null && detectedLng != null) {
-        orderData.maps_link = buildMapsLink(detectedLat, detectedLng);
+      if (targetLat != null) orderData.delivery_lat = targetLat;
+      if (targetLng != null) orderData.delivery_lng = targetLng;
+      if (targetDist != null) orderData.delivery_distance_km = targetDist;
+      if (targetLat != null && targetLng != null) {
+        orderData.maps_link = buildMapsLink(targetLat, targetLng);
       }
 
       // 1. Write order directly to Cloud Firestore
@@ -668,10 +836,34 @@ export default function BookingScreen({ route, navigation }: any) {
               <TextInput
                 style={inputStyle}
                 value={addressLine1}
-                onChangeText={setAddressLine1}
+                onChangeText={handleAddressLineChange}
                 placeholder="House / Flat / Street"
                 placeholderTextColor={theme.textMuted}
               />
+
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>City</Text>
+                  <TextInput
+                    style={inputStyle}
+                    value={city}
+                    onChangeText={handleCityChange}
+                    placeholder="City / Area"
+                    placeholderTextColor={theme.textMuted}
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Pincode</Text>
+                  <TextInput
+                    style={inputStyle}
+                    value={pincode}
+                    onChangeText={handlePincodeChange}
+                    placeholder="Pincode"
+                    keyboardType="numeric"
+                    placeholderTextColor={theme.textMuted}
+                  />
+                </View>
+              </View>
 
               <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Landmark</Text>
               <TextInput
@@ -683,26 +875,71 @@ export default function BookingScreen({ route, navigation }: any) {
               />
             </View>
           ) : (
-            <View
-              style={[
-                styles.addressPreviewBox,
-                {
-                  backgroundColor: isDark ? 'rgba(255, 255, 255, 0.03)' : '#F9FAFB',
-                  borderColor: isDark ? '#2D231E' : '#E5E7EB',
-                },
-              ]}
-            >
-              <Text style={[styles.addrName, { color: theme.textPrimary }]}>
-                👤 {receiverName} ({receiverPhone})
-              </Text>
-              <Text style={[styles.addrLine, { color: theme.textSecondary }]}>
-                {addressLine1}, {pincode}
-              </Text>
-              {landmark ? (
-                <Text style={[styles.addrLandmark, { color: theme.textMuted }]}>
-                  Landmark: {landmark}
+            <View>
+              <View
+                style={[
+                  styles.addressPreviewBox,
+                  {
+                    backgroundColor: isDark ? 'rgba(255, 255, 255, 0.03)' : '#F9FAFB',
+                    borderColor: isDark ? '#2D231E' : '#E5E7EB',
+                  },
+                ]}
+              >
+                <Text style={[styles.addrName, { color: theme.textPrimary }]}>
+                  👤 {receiverName} ({receiverPhone})
                 </Text>
-              ) : null}
+                <Text style={[styles.addrLine, { color: theme.textSecondary }]}>
+                  {addressLine1}{city ? `, ${city}` : ''}{pincode ? ` - ${pincode}` : ''}
+                </Text>
+                {landmark ? (
+                  <Text style={[styles.addrLandmark, { color: theme.textMuted }]}>
+                    Landmark: {landmark}
+                  </Text>
+                ) : null}
+              </View>
+
+              {/* Real-time Delivery Range Verification Chip */}
+              <View style={{ marginTop: 8 }}>
+                {isResolvingLocation ? (
+                  <View style={[styles.rangeBadge, { backgroundColor: isDark ? '#251D1A' : '#F3F4F6', borderColor: isDark ? '#3D2F28' : '#E5E7EB' }]}>
+                    <ActivityIndicator size="small" color={theme.primary} style={{ marginRight: 6 }} />
+                    <Text style={[styles.rangeBadgeText, { color: theme.textSecondary }]}>
+                      Verifying delivery distance...
+                    </Text>
+                  </View>
+                ) : deliveryDistanceKm !== null ? (
+                  deliveryDistanceKm <= maxDeliveryRadiusKm ? (
+                    <View style={[styles.rangeBadge, { backgroundColor: isDark ? 'rgba(16, 185, 129, 0.12)' : '#ECFDF5', borderColor: '#10B981' }]}>
+                      <Text style={{ fontSize: 13, marginRight: 5 }}>🟢</Text>
+                      <Text style={[styles.rangeBadgeText, { color: isDark ? '#34D399' : '#059669', fontWeight: '700' }]}>
+                        Within Delivery Zone • {deliveryDistanceKm} km from kitchen
+                      </Text>
+                    </View>
+                  ) : (
+                    <View style={[styles.rangeBadge, { backgroundColor: isDark ? 'rgba(239, 68, 68, 0.15)' : '#FEF2F2', borderColor: '#EF4444' }]}>
+                      <Text style={{ fontSize: 13, marginRight: 5 }}>🚫</Text>
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.rangeBadgeText, { color: isDark ? '#F87171' : '#DC2626', fontWeight: '800' }]}>
+                          Outside Delivery Area ({deliveryDistanceKm} km away)
+                        </Text>
+                        <Text style={{ fontSize: 11, color: isDark ? '#FCA5A5' : '#B91C1C', marginTop: 1 }}>
+                          Our maximum delivery limit is {maxDeliveryRadiusKm} km from AFoodoo Kitchen.
+                        </Text>
+                      </View>
+                    </View>
+                  )
+                ) : (
+                  <TouchableOpacity
+                    onPress={handleDetectLocation}
+                    style={[styles.rangeBadge, { backgroundColor: isDark ? 'rgba(245, 158, 11, 0.12)' : '#FFFBEB', borderColor: '#F59E0B' }]}
+                  >
+                    <Text style={{ fontSize: 13, marginRight: 5 }}>📍</Text>
+                    <Text style={[styles.rangeBadgeText, { color: isDark ? '#FBBF24' : '#D97706', fontWeight: '600' }]}>
+                      Map location unverified. Tap here to detect GPS location
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              </View>
             </View>
           )}
         </View>
@@ -961,18 +1198,47 @@ export default function BookingScreen({ route, navigation }: any) {
         </View>
 
         {/* Bottom CTA Button: Proceed to Payment → */}
-        <TouchableOpacity
-          style={[styles.proceedButton, { backgroundColor: theme.primary }]}
-          onPress={handleProceedToPayment}
-          disabled={submitting || checkoutItems.length === 0}
-          activeOpacity={0.85}
-        >
-          {submitting ? (
-            <ActivityIndicator color="#FFF" />
-          ) : (
-            <Text style={styles.proceedButtonText}>Proceed to Payment →</Text>
-          )}
-        </TouchableOpacity>
+        {(() => {
+          const isOutOfRange =
+            kitchenLat != null &&
+            kitchenLng != null &&
+            (kitchenLat !== 0 || kitchenLng !== 0) &&
+            deliveryDistanceKm !== null &&
+            deliveryDistanceKm > maxDeliveryRadiusKm;
+
+          return (
+            <TouchableOpacity
+              style={[
+                styles.proceedButton,
+                {
+                  backgroundColor: isOutOfRange
+                    ? (isDark ? '#4A1515' : '#FEE2E2')
+                    : theme.primary,
+                  borderColor: isOutOfRange ? '#EF4444' : 'transparent',
+                  borderWidth: isOutOfRange ? 1.5 : 0,
+                },
+              ]}
+              onPress={handleProceedToPayment}
+              disabled={submitting || checkoutItems.length === 0}
+              activeOpacity={0.85}
+            >
+              {submitting ? (
+                <ActivityIndicator color={isOutOfRange ? '#EF4444' : '#FFF'} />
+              ) : isOutOfRange ? (
+                <Text
+                  style={[
+                    styles.proceedButtonText,
+                    { color: isDark ? '#FCA5A5' : '#DC2626' },
+                  ]}
+                >
+                  🚫 Outside Delivery Area ({deliveryDistanceKm} km)
+                </Text>
+              ) : (
+                <Text style={styles.proceedButtonText}>Proceed to Payment →</Text>
+              )}
+            </TouchableOpacity>
+          );
+        })()}
       </ScrollView>
 
       {/* Zero-fee Direct UPI Modal */}
@@ -1288,5 +1554,17 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '900',
     letterSpacing: 0.3,
+  },
+  rangeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginTop: 8,
+  },
+  rangeBadgeText: {
+    fontSize: 12,
   },
 });

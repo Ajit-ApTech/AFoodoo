@@ -30,6 +30,7 @@ export interface DeliveryAddress {
   latitude?: number;
   longitude?: number;
   maps_link?: string;
+  distance_km?: number;
 }
 
 /** @deprecated Use DeliveryAddress */
