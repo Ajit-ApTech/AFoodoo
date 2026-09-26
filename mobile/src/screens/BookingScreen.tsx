@@ -82,8 +82,13 @@ export default function BookingScreen({ route, navigation }: any) {
   const [customQrUrl, setCustomQrUrl] = useState('');
   const [enableCod, setEnableCod] = useState(true);
 
-  // Live admin-controlled fees
+  // Live admin-controlled fees & dynamic distance pricing
   const [deliveryFee, setDeliveryFee] = useState<number>(30);
+  const [deliveryFeeType, setDeliveryFeeType] = useState<'fixed' | 'distance'>('distance');
+  const [baseDeliveryFee, setBaseDeliveryFee] = useState<number>(20);
+  const [baseDeliveryDistanceKm, setBaseDeliveryDistanceKm] = useState<number>(3);
+  const [perKmFee, setPerKmFee] = useState<number>(5);
+  const [freeDeliveryAbove, setFreeDeliveryAbove] = useState<number>(0);
   const [platformFee, setPlatformFee] = useState<number>(10);
 
   const [submitting, setSubmitting] = useState(false);
@@ -103,6 +108,11 @@ export default function BookingScreen({ route, navigation }: any) {
           if (d.upi_qr_image_url) setCustomQrUrl(d.upi_qr_image_url);
           if (d.enable_cod != null) setEnableCod(d.enable_cod);
           if (d.delivery_fee != null) setDeliveryFee(Number(d.delivery_fee));
+          if (d.delivery_fee_type) setDeliveryFeeType(d.delivery_fee_type);
+          if (d.base_delivery_fee != null) setBaseDeliveryFee(Number(d.base_delivery_fee));
+          if (d.base_delivery_distance_km != null) setBaseDeliveryDistanceKm(Number(d.base_delivery_distance_km));
+          if (d.per_km_fee != null) setPerKmFee(Number(d.per_km_fee));
+          if (d.free_delivery_above != null) setFreeDeliveryAbove(Number(d.free_delivery_above));
           if (d.platform_fee != null) setPlatformFee(Number(d.platform_fee));
           if (d.kitchen_lat != null) setKitchenLat(Number(d.kitchen_lat));
           if (d.kitchen_lng != null) setKitchenLng(Number(d.kitchen_lng));
@@ -225,7 +235,23 @@ export default function BookingScreen({ route, navigation }: any) {
       : [];
 
   const subtotal = checkoutItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
-  const finalDeliveryFee = subtotal > 0 ? deliveryFee : 0;
+
+  // Dynamic delivery fee calculation (Distance-Based vs Fixed Rate)
+  let calculatedDeliveryFee = deliveryFee;
+  if (deliveryFeeType === 'distance') {
+    if (deliveryDistanceKm != null && deliveryDistanceKm > 0) {
+      const extraKm = Math.max(0, deliveryDistanceKm - baseDeliveryDistanceKm);
+      calculatedDeliveryFee = Math.round(baseDeliveryFee + extraKm * perKmFee);
+    } else {
+      calculatedDeliveryFee = baseDeliveryFee;
+    }
+  }
+  // Free delivery threshold check
+  if (freeDeliveryAbove > 0 && subtotal >= freeDeliveryAbove) {
+    calculatedDeliveryFee = 0;
+  }
+
+  const finalDeliveryFee = subtotal > 0 ? calculatedDeliveryFee : 0;
   const finalPlatformFee = subtotal > 0 ? platformFee : 0;
   const totalAmount = Math.max(0, subtotal + finalDeliveryFee + finalPlatformFee - couponDiscount);
 
@@ -1175,7 +1201,16 @@ export default function BookingScreen({ route, navigation }: any) {
 
           {/* Delivery Fee managed dynamically by Admin Panel */}
           <View style={styles.summaryRow}>
-            <Text style={[styles.summaryLabel, { color: theme.textSecondary }]}>Delivery Fee</Text>
+            <View style={{ flex: 1, paddingRight: 8 }}>
+              <Text style={[styles.summaryLabel, { color: theme.textSecondary }]}>Delivery Fee</Text>
+              {deliveryFeeType === 'distance' && deliveryDistanceKm != null && finalDeliveryFee > 0 && (
+                <Text style={{ fontSize: 11, color: theme.textSecondary, marginTop: 1 }}>
+                  {deliveryDistanceKm <= baseDeliveryDistanceKm
+                    ? `${deliveryDistanceKm} km (Base fee)`
+                    : `${deliveryDistanceKm} km (₹${baseDeliveryFee} + ${(deliveryDistanceKm - baseDeliveryDistanceKm).toFixed(1)} km × ₹${perKmFee}/km)`}
+                </Text>
+              )}
+            </View>
             <Text
               style={[
                 styles.summaryVal,

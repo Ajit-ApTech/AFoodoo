@@ -115,6 +115,11 @@ export interface DeliveryConfig {
   upi_qr_image_url?: string;
   enable_cod?: boolean;
   delivery_fee?: number;
+  delivery_fee_type?: 'fixed' | 'distance';
+  base_delivery_fee?: number;
+  base_delivery_distance_km?: number;
+  per_km_fee?: number;
+  free_delivery_above?: number;
   platform_fee?: number;
   updated_at: string;
 }

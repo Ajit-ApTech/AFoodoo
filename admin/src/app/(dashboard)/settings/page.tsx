@@ -5,7 +5,7 @@ import { db, storage } from '../../../lib/firebase';
 import { doc, getDoc, setDoc, addDoc, collection } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { DeliveryConfig } from '../../../types';
-import { MapPin, Navigation, Save, Settings2, Truck, Phone, Radius, CheckCircle2, AlertCircle, ExternalLink, QrCode, Upload, Trash2, Check, RefreshCw } from 'lucide-react';
+import { MapPin, Navigation, Save, Settings2, Truck, Phone, Radius, CheckCircle2, AlertCircle, ExternalLink, QrCode, Upload, Trash2, Check, RefreshCw, Compass, Calculator } from 'lucide-react';
 import { buildMapsLink } from '../../../lib/geo';
 
 const DEFAULT_CONFIG: DeliveryConfig = {
@@ -24,6 +24,11 @@ const DEFAULT_CONFIG: DeliveryConfig = {
   upi_qr_image_url: '',
   enable_cod: true,
   delivery_fee: 30,
+  delivery_fee_type: 'distance',
+  base_delivery_fee: 20,
+  base_delivery_distance_km: 3,
+  per_km_fee: 5,
+  free_delivery_above: 0,
   platform_fee: 10,
   updated_at: '',
 };
@@ -370,14 +375,166 @@ export default function DeliverySettingsPage() {
           <div>
             <h2 className="text-base font-extrabold text-white">Order Checkout Fees (Customer App)</h2>
             <p className="text-xs text-slate-400">
-              Manage the delivery fee and platform fee charged to customers at checkout.
+              Configure how delivery fees and packaging fees are calculated for customer checkout.
             </p>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+        {/* Pricing Strategy Selector */}
+        <div>
+          <label className={labelClass}>Delivery Fee Pricing Model</label>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-1.5">
+            <button
+              type="button"
+              onClick={() => setConfig(prev => ({ ...prev, delivery_fee_type: 'distance' }))}
+              className={`flex items-center justify-between p-3.5 rounded-xl border text-left transition-all ${
+                (config.delivery_fee_type ?? 'distance') === 'distance'
+                  ? 'bg-amber-500/10 border-amber-500 text-white shadow-sm'
+                  : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <div className={`p-2 rounded-lg ${
+                  (config.delivery_fee_type ?? 'distance') === 'distance' ? 'bg-amber-500 text-slate-950' : 'bg-slate-800 text-slate-400'
+                }`}>
+                  <Compass className="h-4 w-4" />
+                </div>
+                <div>
+                  <div className="text-xs font-bold text-white">Distance-Based Dynamic Pricing</div>
+                  <div className="text-[11px] text-slate-400">Base fee + charge per KM for far orders</div>
+                </div>
+              </div>
+              {(config.delivery_fee_type ?? 'distance') === 'distance' && (
+                <Check className="h-4 w-4 text-amber-400" />
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setConfig(prev => ({ ...prev, delivery_fee_type: 'fixed' }))}
+              className={`flex items-center justify-between p-3.5 rounded-xl border text-left transition-all ${
+                config.delivery_fee_type === 'fixed'
+                  ? 'bg-amber-500/10 border-amber-500 text-white shadow-sm'
+                  : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <div className={`p-2 rounded-lg ${
+                  config.delivery_fee_type === 'fixed' ? 'bg-amber-500 text-slate-950' : 'bg-slate-800 text-slate-400'
+                }`}>
+                  <Truck className="h-4 w-4" />
+                </div>
+                <div>
+                  <div className="text-xs font-bold text-white">Fixed Delivery Fee (Flat Rate)</div>
+                  <div className="text-[11px] text-slate-400">Same flat delivery fee for all orders</div>
+                </div>
+              </div>
+              {config.delivery_fee_type === 'fixed' && (
+                <Check className="h-4 w-4 text-amber-400" />
+              )}
+            </button>
+          </div>
+        </div>
+
+        {(config.delivery_fee_type ?? 'distance') === 'distance' ? (
+          <div className="space-y-4 pt-1">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+              <div>
+                <label className={labelClass}>Base Delivery Fee (₹)</label>
+                <input
+                  type="number"
+                  min={0}
+                  className={inputClass}
+                  placeholder="e.g. 20"
+                  value={config.base_delivery_fee ?? 20}
+                  onChange={e =>
+                    setConfig(prev => ({
+                      ...prev,
+                      base_delivery_fee: Math.max(0, parseInt(e.target.value) || 0),
+                    }))
+                  }
+                />
+                <p className="text-xs text-slate-500 mt-1.5">
+                  Minimum fee charged for orders within base distance.
+                </p>
+              </div>
+
+              <div>
+                <label className={labelClass}>Base Distance Included (KM)</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={30}
+                  className={inputClass}
+                  placeholder="e.g. 3"
+                  value={config.base_delivery_distance_km ?? 3}
+                  onChange={e =>
+                    setConfig(prev => ({
+                      ...prev,
+                      base_delivery_distance_km: Math.max(1, parseInt(e.target.value) || 1),
+                    }))
+                  }
+                />
+                <p className="text-xs text-slate-500 mt-1.5">
+                  Orders up to this distance only pay the base fee.
+                </p>
+              </div>
+
+              <div>
+                <label className={labelClass}>Extra Fee per KM (₹ / KM)</label>
+                <input
+                  type="number"
+                  min={0}
+                  className={inputClass}
+                  placeholder="e.g. 5"
+                  value={config.per_km_fee ?? 5}
+                  onChange={e =>
+                    setConfig(prev => ({
+                      ...prev,
+                      per_km_fee: Math.max(0, parseInt(e.target.value) || 0),
+                    }))
+                  }
+                />
+                <p className="text-xs text-slate-500 mt-1.5">
+                  Added for every KM beyond the base distance.
+                </p>
+              </div>
+            </div>
+
+            {/* Live Fee Simulation Card */}
+            <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-3">
+                <span className="text-xs font-bold text-amber-400 flex items-center gap-1.5">
+                  <Calculator className="h-3.5 w-3.5" />
+                  Live Distance Fee Calculator Preview
+                </span>
+                <span className="text-[11px] text-slate-400 font-mono">
+                  Base ₹{config.base_delivery_fee ?? 20} (≤{config.base_delivery_distance_km ?? 3}km) + ₹{config.per_km_fee ?? 5}/extra km
+                </span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                {[2, 5, 8, 10].map(sampleKm => {
+                  const baseKm = config.base_delivery_distance_km ?? 3;
+                  const baseFee = config.base_delivery_fee ?? 20;
+                  const perKm = config.per_km_fee ?? 5;
+                  const extra = Math.max(0, sampleKm - baseKm);
+                  const fee = baseFee + extra * perKm;
+                  return (
+                    <div key={sampleKm} className="bg-slate-900 border border-slate-800/80 rounded-lg p-3 text-center">
+                      <div className="text-xs text-slate-300 font-medium">📍 {sampleKm} KM Customer</div>
+                      <div className="text-lg font-black text-amber-400 mt-1">₹{fee}</div>
+                      <div className="text-[10px] text-slate-500 mt-0.5">
+                        {sampleKm <= baseKm ? 'Within base distance' : `₹${baseFee} + ${extra}km × ₹${perKm}`}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        ) : (
           <div>
-            <label className={labelClass}>Standard Delivery Fee per Order (₹)</label>
+            <label className={labelClass}>Standard Fixed Delivery Fee per Order (₹)</label>
             <input
               type="number"
               min={0}
@@ -392,10 +549,13 @@ export default function DeliverySettingsPage() {
               }
             />
             <p className="text-xs text-slate-500 mt-1.5">
-              Set to 0 for Free Delivery across all customer orders.
+              Flat delivery charge for all orders regardless of distance (0 for Free Delivery).
             </p>
           </div>
+        )}
 
+        {/* Platform / Packaging Fee & Free Delivery Threshold */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5 pt-3 border-t border-slate-800">
           <div>
             <label className={labelClass}>Platform / Packaging Fee per Order (₹)</label>
             <input
@@ -413,6 +573,26 @@ export default function DeliverySettingsPage() {
             />
             <p className="text-xs text-slate-500 mt-1.5">
               Fixed packaging and platform maintenance fee added to order total.
+            </p>
+          </div>
+
+          <div>
+            <label className={labelClass}>Free Delivery on Orders Above (₹)</label>
+            <input
+              type="number"
+              min={0}
+              className={inputClass}
+              placeholder="e.g. 499 (0 to disable)"
+              value={config.free_delivery_above ?? 0}
+              onChange={e =>
+                setConfig(prev => ({
+                  ...prev,
+                  free_delivery_above: Math.max(0, parseInt(e.target.value) || 0),
+                }))
+              }
+            />
+            <p className="text-xs text-slate-500 mt-1.5">
+              Optional threshold. If order subtotal reaches this amount, delivery fee is ₹0.
             </p>
           </div>
         </div>
