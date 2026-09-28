@@ -2,9 +2,9 @@
 
 import React, { useEffect, useState, useCallback } from 'react';
 import { db } from '../../../lib/firebase';
-import { collection, onSnapshot, doc, updateDoc, addDoc, getDoc } from 'firebase/firestore';
+import { collection, onSnapshot, doc, updateDoc, addDoc, getDoc, increment } from 'firebase/firestore';
 import { Order, OrderStatus, DeliveryConfig } from '../../../types';
-import { ShoppingBag, Truck, CheckCircle, Clock, MapPin, RotateCcw, History, Navigation, Phone, Route, Send } from 'lucide-react';
+import { ShoppingBag, Truck, CheckCircle, Clock, MapPin, RotateCcw, History, Navigation, Phone, Route, Send, XCircle, Banknote, AlertTriangle } from 'lucide-react';
 import { sendExpoPushNotification } from '../../../lib/pushService';
 import { nearestNeighborSort, buildRouteUrl, buildMapsLink } from '../../../lib/geo';
 
@@ -17,6 +17,9 @@ interface RouteStopInfo {
   address: string;
   otp: string;
   menuTitle: string;
+  paymentMethod?: string;
+  paymentStatus?: string;
+  totalAmount?: number;
 }
 
 export default function OrderQueuePage() {
@@ -30,6 +33,13 @@ export default function OrderQueuePage() {
   const [routeStops, setRouteStops] = useState<RouteStopInfo[]>([]);
   const [showRouteModal, setShowRouteModal] = useState(false);
   const [routeCopied, setRouteCopied] = useState<number | null>(null);
+
+  // Order Cancellation State
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [orderToCancel, setOrderToCancel] = useState<Order | null>(null);
+  const [cancellationReason, setCancellationReason] = useState('Customer requested cancellation');
+  const [customReason, setCustomReason] = useState('');
+  const [isProcessingCancel, setIsProcessingCancel] = useState(false);
 
   // Load delivery config from Cloud Firestore (kitchen GPS, radius, rider contact)
   useEffect(() => {
@@ -74,14 +84,21 @@ export default function OrderQueuePage() {
       const targetOrder = orders.find(o => o.id === orderId);
       const displayCode = targetOrder?.order_code || (orderId ? orderId.slice(-6).toUpperCase() : 'ORD');
 
-      await updateDoc(doc(db, 'orders', orderId), {
+      const updatePayload: any = {
         status: nextStatus,
-      });
+        updated_at: new Date().toISOString(),
+      };
+      // If order is delivered via Cash on Delivery, mark payment_status as paid (cash received)
+      if (nextStatus === 'delivered' && targetOrder?.payment_method === 'cod') {
+        updatePayload.payment_status = 'paid';
+      }
+
+      await updateDoc(doc(db, 'orders', orderId), updatePayload);
 
       await addDoc(collection(db, 'audit_logs'), {
         action_type: 'ORDER_STATUS_UPDATED',
         admin_email: 'admin@afoodoo.com',
-        details: `Advanced order #${displayCode} status to "${nextStatus}"`,
+        details: `Advanced order #${displayCode} status to "${nextStatus}"${nextStatus === 'delivered' && targetOrder?.payment_method === 'cod' ? ' (Cash collected)' : ''}`,
         timestamp: new Date().toISOString(),
       });
 
@@ -160,6 +177,128 @@ export default function OrderQueuePage() {
     }
   };
 
+  // Full Order Cancellation Handler with Reason & Automatic Wallet Refund
+  const handleExecuteCancellation = async () => {
+    if (!orderToCancel) return;
+    setIsProcessingCancel(true);
+    const finalReason = cancellationReason === 'Other' && customReason.trim() ? customReason.trim() : cancellationReason;
+    const orderId = orderToCancel.id;
+    const displayCode = orderToCancel.order_code || orderId.slice(-6).toUpperCase();
+    const orderAmount = Number(orderToCancel.total_amount ?? orderToCancel.price ?? 0);
+    const isWallet = orderToCancel.payment_method === 'wallet';
+
+    try {
+      // 1. Update order in Firestore
+      const updateData: any = {
+        status: 'cancelled',
+        cancellation_reason: finalReason,
+        cancelled_at: new Date().toISOString(),
+        cancelled_by: 'admin',
+        updated_at: new Date().toISOString(),
+      };
+      if (isWallet) {
+        updateData.payment_status = 'refunded';
+      } else if (orderToCancel.payment_method === 'cod') {
+        updateData.payment_status = 'cancelled';
+      }
+      await updateDoc(doc(db, 'orders', orderId), updateData);
+
+      // 2. Auto-refund customer wallet if paid via Wallet
+      const userPhoneDigits = (orderToCancel.user_phone || '').replace(/\D/g, '');
+      const userDocId = orderToCancel.user_id || (userPhoneDigits ? `usr_${userPhoneDigits}` : '');
+
+      if (isWallet && userDocId && orderAmount > 0) {
+        try {
+          const userRef = doc(db, 'users', userDocId);
+          await updateDoc(userRef, {
+            wallet_balance: increment(orderAmount),
+          });
+
+          await addDoc(collection(db, 'wallet_transactions'), {
+            user_id: userDocId,
+            type: 'credit',
+            amount: orderAmount,
+            title: `Refund: Cancelled Order #${displayCode}`,
+            order_id: orderId,
+            timestamp: new Date().toISOString(),
+          });
+        } catch (rErr) {
+          console.error('Error processing wallet refund:', rErr);
+        }
+      }
+
+      // 3. Restore menu item quantity_booked (decrement)
+      try {
+        if (Array.isArray(orderToCancel.items)) {
+          for (const item of orderToCancel.items) {
+            if (item.id) {
+              const qty = Number(item.quantity) || 1;
+              const itemRef = doc(db, 'menu_items', item.id);
+              const snap = await getDoc(itemRef);
+              if (snap.exists()) {
+                const currentBooked = Number(snap.data()?.quantity_booked) || 0;
+                await updateDoc(itemRef, {
+                  quantity_booked: Math.max(0, currentBooked - qty),
+                });
+              }
+            }
+          }
+        }
+      } catch (invErr) {
+        console.error('Error restoring inventory quantity:', invErr);
+      }
+
+      // 4. Audit Log Entry
+      await addDoc(collection(db, 'audit_logs'), {
+        action_type: 'ORDER_CANCELLED',
+        admin_email: 'admin@afoodoo.com',
+        details: `Cancelled order #${displayCode}. Reason: "${finalReason}". ${isWallet ? `Refunded ₹${orderAmount} to customer wallet.` : ''}`,
+        timestamp: new Date().toISOString(),
+      });
+
+      // 5. Send Push Notification to Customer
+      let fcmToken: string | null = (orderToCancel as any).expo_push_token || null;
+      if (!fcmToken && userDocId) {
+        try {
+          const userSnap = await getDoc(doc(db, 'users', userDocId));
+          if (userSnap.exists()) {
+            fcmToken = userSnap.data()?.expo_push_token || userSnap.data()?.fcm_token || null;
+          }
+        } catch (_) {}
+      }
+
+      const pushTitle = '❌ AFoodoo Order Cancelled';
+      const pushBody = `Your order #${displayCode} was cancelled (${finalReason}).${isWallet ? ` ₹${orderAmount} has been refunded to your wallet.` : ''}`;
+
+      try {
+        await addDoc(collection(db, 'customer_notifications'), {
+          user_id: userDocId,
+          user_phone: userPhoneDigits,
+          order_id: orderId,
+          title: pushTitle,
+          body: pushBody,
+          status: 'cancelled',
+          timestamp: new Date().toISOString(),
+        });
+      } catch (_) {}
+
+      if (fcmToken) {
+        sendExpoPushNotification([fcmToken], pushTitle, pushBody, {
+          orderId: orderId,
+          status: 'cancelled',
+        });
+      }
+
+      setShowCancelModal(false);
+      setOrderToCancel(null);
+      setIsProcessingCancel(false);
+      alert(`Order #${displayCode} has been cancelled successfully.${isWallet ? `\n\n₹${orderAmount} was automatically refunded to the customer's wallet.` : ''}`);
+    } catch (err: any) {
+      setIsProcessingCancel(false);
+      alert(`Failed to cancel order: ${err.message}`);
+    }
+  };
+
   const handleToggleTiffinReturn = async (orderId: string, currentReturned: boolean) => {
     const newStatus = !currentReturned;
     try {
@@ -205,6 +344,9 @@ export default function OrderQueuePage() {
         : 'Address on file',
       otp: o.otp_code || 'N/A',
       menuTitle: o.menu_title || 'Tiffin Meal',
+      paymentMethod: o.payment_method || 'prepaid',
+      paymentStatus: o.payment_status || 'paid',
+      totalAmount: Number(o.total_amount ?? o.price ?? 0),
     }));
 
     const sorted = nearestNeighborSort(
@@ -239,10 +381,13 @@ export default function OrderQueuePage() {
     const phone = deliveryConfig.rider_whatsapp.replace(/[^0-9]/g, '');
 
     const stopsSummary = routeStops
-      .map(
-        (s, i) =>
-          `📍 *Stop #${i + 1}:* ${s.name}\n   📞 ${s.phone}\n   🏠 ${s.address}\n   🍱 Meal: ${s.menuTitle}\n   🔐 Delivery OTP: *${s.otp}*`
-      )
+      .map((s, i) => {
+        const isCod = s.paymentMethod === 'cod';
+        const payLine = isCod
+          ? `   💰 *Payment: ⚠️ COLLECT CASH: ₹${(s.totalAmount ?? 0).toFixed(0)} 💵*`
+          : `   💰 *Payment: ✅ PREPAID (Do NOT collect cash)*`;
+        return `📍 *Stop #${i + 1}:* ${s.name}\n   📞 ${s.phone}\n   🏠 ${s.address}\n   🍱 Meal: ${s.menuTitle}\n${payLine}\n   🔐 Delivery OTP: *${s.otp}*`;
+      })
       .join('\n\n');
 
     const linksText = routeLinks
@@ -259,7 +404,7 @@ export default function OrderQueuePage() {
       `───────────────────────\n` +
       `🧭 *Turn-by-Turn Google Maps Navigation:*\n\n` +
       `${linksText}\n\n` +
-      `⚠️ *Rider Notice:* Collect and verify the 4-digit OTP from the customer before handing over the tiffin!`;
+      `⚠️ *Rider Notice:* Collect and verify the 4-digit OTP from customer! Collect cash where indicated with 💵!`;
 
     const whatsappUrl = `https://wa.me/${phone}?text=${encodeURIComponent(fullMessage)}`;
     window.open(whatsappUrl, '_blank');
@@ -401,6 +546,33 @@ export default function OrderQueuePage() {
                   {getStatusBadge(order.status)}
                 </div>
 
+                {/* Payment & COD Badge */}
+                <div className="flex items-center justify-between gap-2">
+                  {order.payment_method === 'cod' ? (
+                    <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-black border ${
+                      order.status === 'delivered' || order.payment_status === 'paid'
+                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                        : 'bg-amber-500/20 text-amber-300 border-amber-500/50 animate-pulse'
+                    }`}>
+                      <Banknote className="h-3.5 w-3.5" />
+                      <span>
+                        {order.status === 'delivered' || order.payment_status === 'paid'
+                          ? `💵 COD COLLECTED: ₹${Number(order.total_amount ?? order.price ?? 0).toFixed(0)}`
+                          : `⚠️ COLLECT CASH: ₹${Number(order.total_amount ?? order.price ?? 0).toFixed(0)}`}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-bold text-[11px] px-2.5 py-1 rounded-lg">
+                      <span>✅ PREPAID ({order.payment_method === 'wallet' ? 'Wallet' : 'Online UPI'})</span>
+                    </div>
+                  )}
+                  {order.status === 'cancelled' && order.cancellation_reason && (
+                    <span className="text-[10px] text-rose-400 font-semibold bg-rose-500/10 border border-rose-500/30 px-2 py-0.5 rounded max-w-[160px] truncate" title={order.cancellation_reason}>
+                      Reason: {order.cancellation_reason}
+                    </span>
+                  )}
+                </div>
+
                 {/* Multi-Item Cart Breakdown (if present) */}
                 {Array.isArray(order.items) && order.items.length > 0 && (
                   <div className="bg-slate-950/70 p-2.5 rounded-xl border border-slate-800 text-[11px] space-y-1">
@@ -519,6 +691,21 @@ export default function OrderQueuePage() {
                   </button>
                 )}
 
+                {/* Cancel Order Button (Available for non-delivered and non-cancelled orders) */}
+                {order.status !== 'delivered' && order.status !== 'cancelled' && (
+                  <button
+                    onClick={() => {
+                      setOrderToCancel(order);
+                      setCancellationReason('Customer requested cancellation');
+                      setCustomReason('');
+                      setShowCancelModal(true);
+                    }}
+                    className="w-full bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 font-bold py-1.5 rounded-xl text-xs transition-all flex items-center justify-center gap-1.5"
+                  >
+                    <XCircle className="h-3.5 w-3.5" /> Cancel Order
+                  </button>
+                )}
+
                 <div className="flex items-center justify-between pt-1">
                   <button
                     onClick={() => handleToggleTiffinReturn(order.id, !!order.tiffin_returned)}
@@ -564,13 +751,13 @@ export default function OrderQueuePage() {
             </p>
 
             {routeStops.length > 0 && (
-              <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-3 space-y-2 max-h-44 overflow-y-auto">
+              <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-3 space-y-2 max-h-48 overflow-y-auto">
                 <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wide">
                   Sequence & Customer OTP ({routeStops.length} Orders)
                 </p>
                 <div className="space-y-1.5">
                   {routeStops.map((stop, i) => (
-                    <div key={stop.orderId} className="flex items-center justify-between text-xs bg-slate-900/80 p-2 rounded-lg border border-slate-800/80">
+                    <div key={stop.orderId} className="flex items-center justify-between text-xs bg-slate-900/80 p-2.5 rounded-lg border border-slate-800/80">
                       <div className="flex items-center gap-2 min-w-0">
                         <span className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 font-bold text-[10px] flex items-center justify-center shrink-0">
                           {i + 1}
@@ -580,10 +767,19 @@ export default function OrderQueuePage() {
                           <p className="text-[10px] text-slate-400 truncate">{stop.address}</p>
                         </div>
                       </div>
-                      <div className="text-right shrink-0 ml-2">
-                        <span className="text-[10px] bg-amber-500/10 text-amber-400 border border-amber-500/30 px-2 py-0.5 rounded font-mono font-bold">
+                      <div className="text-right shrink-0 ml-2 space-y-1">
+                        <span className="text-[10px] bg-amber-500/10 text-amber-400 border border-amber-500/30 px-2 py-0.5 rounded font-mono font-bold block">
                           OTP: {stop.otp}
                         </span>
+                        {stop.paymentMethod === 'cod' ? (
+                          <span className="text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded font-black block">
+                            💵 Collect ₹{(stop.totalAmount ?? 0).toFixed(0)}
+                          </span>
+                        ) : (
+                          <span className="text-[9px] text-emerald-400 font-bold block">
+                            ✅ Prepaid
+                          </span>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -630,6 +826,154 @@ export default function OrderQueuePage() {
               <Send className="h-4 w-4" />
               📤 Send Route to Rider via WhatsApp
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Cancel Order Modal */}
+      {showCancelModal && orderToCancel && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl p-6 max-w-md w-full space-y-5 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h2 className="text-base font-extrabold text-white flex items-center gap-2">
+                <AlertTriangle className="h-5 w-5 text-rose-400" />
+                Cancel Order #{orderToCancel.order_code || orderToCancel.id.slice(-6).toUpperCase()}
+              </h2>
+              <button
+                onClick={() => {
+                  if (!isProcessingCancel) {
+                    setShowCancelModal(false);
+                    setOrderToCancel(null);
+                  }
+                }}
+                disabled={isProcessingCancel}
+                className="text-slate-400 hover:text-white text-sm font-bold disabled:opacity-50"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Order Info Summary */}
+            <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 text-xs space-y-1.5">
+              <div className="flex justify-between text-slate-300">
+                <span>Customer:</span>
+                <span className="font-bold text-white">{orderToCancel.delivery_name || orderToCancel.user_name || 'Customer'}</span>
+              </div>
+              <div className="flex justify-between text-slate-300">
+                <span>Meal:</span>
+                <span className="font-bold text-orange-400">{orderToCancel.menu_title || 'Tiffin Meal'}</span>
+              </div>
+              <div className="flex justify-between text-slate-300">
+                <span>Amount:</span>
+                <span className="font-mono font-bold text-white">₹{orderToCancel.total_amount ?? orderToCancel.price ?? 0}</span>
+              </div>
+              <div className="flex justify-between text-slate-300">
+                <span>Payment Method:</span>
+                <span className="font-bold uppercase text-slate-200">{orderToCancel.payment_method || 'Wallet'}</span>
+              </div>
+            </div>
+
+            {/* Wallet Auto-Refund Alert */}
+            {orderToCancel.payment_method === 'wallet' ? (
+              <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs p-3 rounded-xl space-y-1">
+                <p className="font-extrabold flex items-center gap-1.5">
+                  <span>✓</span>
+                  <span>Automatic Wallet Refund</span>
+                </p>
+                <p className="text-[11px] text-emerald-400/90 leading-relaxed">
+                  ₹{orderToCancel.total_amount ?? orderToCancel.price ?? 0} will be instantly refunded to the customer&apos;s AFoodoo wallet balance upon cancellation.
+                </p>
+              </div>
+            ) : orderToCancel.payment_method === 'cod' ? (
+              <div className="bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs p-3 rounded-xl">
+                <p className="font-bold">💵 Cash on Delivery Order</p>
+                <p className="text-[11px] text-amber-400/90 mt-0.5">
+                  No payment was received yet. The order will be cancelled without cash refund.
+                </p>
+              </div>
+            ) : (
+              <div className="bg-blue-500/10 border border-blue-500/30 text-blue-300 text-xs p-3 rounded-xl">
+                <p className="font-bold">Online / UPI Payment</p>
+                <p className="text-[11px] text-blue-400/90 mt-0.5">
+                  If required, process UPI refund via merchant portal or credit to user&apos;s wallet.
+                </p>
+              </div>
+            )}
+
+            {/* Cancellation Reason Selection */}
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-slate-300 block">
+                Select Cancellation Reason:
+              </label>
+              <div className="space-y-1.5">
+                {[
+                  'Customer requested cancellation',
+                  'Kitchen item out of stock',
+                  'Delivery address unreachable / out of area',
+                  'Customer placed duplicate order',
+                  'Other',
+                ].map(reason => (
+                  <label
+                    key={reason}
+                    className={`flex items-center gap-2.5 p-2 rounded-xl border text-xs cursor-pointer transition-all ${
+                      cancellationReason === reason
+                        ? 'bg-orange-500/10 border-orange-500/40 text-orange-300 font-bold'
+                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="cancellationReason"
+                      value={reason}
+                      checked={cancellationReason === reason}
+                      onChange={e => setCancellationReason(e.target.value)}
+                      className="accent-orange-500"
+                    />
+                    <span>{reason}</span>
+                  </label>
+                ))}
+              </div>
+
+              {cancellationReason === 'Other' && (
+                <textarea
+                  value={customReason}
+                  onChange={e => setCustomReason(e.target.value)}
+                  placeholder="Enter custom cancellation reason..."
+                  rows={2}
+                  className="w-full mt-2 bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-orange-500 resize-none"
+                />
+              )}
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                disabled={isProcessingCancel}
+                onClick={() => {
+                  setShowCancelModal(false);
+                  setOrderToCancel(null);
+                }}
+                className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-2.5 rounded-xl text-xs transition-all disabled:opacity-50"
+              >
+                Go Back
+              </button>
+              <button
+                type="button"
+                disabled={isProcessingCancel}
+                onClick={handleExecuteCancellation}
+                className="flex-1 bg-rose-600 hover:bg-rose-500 text-white font-extrabold py-2.5 rounded-xl text-xs transition-all shadow-lg shadow-rose-600/20 flex items-center justify-center gap-1.5 disabled:opacity-50"
+              >
+                {isProcessingCancel ? (
+                  <span>Processing Refund...</span>
+                ) : (
+                  <>
+                    <XCircle className="h-4 w-4" />
+                    <span>Confirm Cancel</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}

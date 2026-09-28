@@ -94,6 +94,23 @@ export default function BookingScreen({ route, navigation }: any) {
   const [showUpiModal, setShowUpiModal] = useState(false);
   const [pendingUpiPayload, setPendingUpiPayload] = useState<any>(null);
 
+  // Live meal slots subscription to always enforce fresh cutoff timings
+  const [mealSlots, setMealSlots] = useState<any[]>([]);
+
+  useEffect(() => {
+    try {
+      const { collection, onSnapshot } = require('firebase/firestore');
+      const { firestore } = require('../firebaseConfig');
+      const unsub = onSnapshot(collection(firestore, 'meal_slots'), (snap: any) => {
+        if (!snap.empty) {
+          const list = snap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
+          setMealSlots(list);
+        }
+      });
+      return unsub;
+    } catch (e) {}
+  }, []);
+
   // Read live UPI ID, Payment & Admin Fee settings from Cloud Firestore settings/delivery_config
   useEffect(() => {
     try {
@@ -404,13 +421,22 @@ export default function BookingScreen({ route, navigation }: any) {
     if (timeVal instanceof Date) return dayjs(timeVal);
     if (timeVal?.toDate) return dayjs(timeVal.toDate());
     if (typeof timeVal === 'string') {
-      const match = timeVal.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
-      if (match) {
-        let hours = parseInt(match[1], 10);
-        const minutes = parseInt(match[2], 10);
-        const ampm = match[3].toUpperCase();
+      const trimmed = timeVal.trim();
+      // Match 12-hour format e.g. "09:30 AM", "11:59PM", "9:00 am"
+      const match12 = trimmed.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)$/i);
+      if (match12) {
+        let hours = parseInt(match12[1], 10);
+        const minutes = parseInt(match12[2], 10);
+        const ampm = match12[3].toUpperCase();
         if (ampm === 'PM' && hours < 12) hours += 12;
         if (ampm === 'AM' && hours === 12) hours = 0;
+        return dayjs().set('hour', hours).set('minute', minutes).set('second', 0);
+      }
+      // Match 24-hour format e.g. "14:30", "09:00"
+      const match24 = trimmed.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+      if (match24) {
+        const hours = parseInt(match24[1], 10);
+        const minutes = parseInt(match24[2], 10);
         return dayjs().set('hour', hours).set('minute', minutes).set('second', 0);
       }
       const parsed = dayjs(timeVal);
@@ -419,8 +445,69 @@ export default function BookingScreen({ route, navigation }: any) {
     return null;
   };
 
+  // Find the exact meal slot belonging to the cart items using real-time Firestore slots
+  const effectiveSlot = (() => {
+    const itemSlotId = (checkoutItems[0] as any)?.meal_slot_id || (routeItem as any)?.meal_slot_id;
+    if (itemSlotId && mealSlots.length > 0) {
+      const found = mealSlots.find((s: any) => s.id === itemSlotId || s.name === itemSlotId);
+      if (found) return found;
+    }
+    if (activeSlot && mealSlots.length > 0) {
+      const found = mealSlots.find((s: any) => s.id === activeSlot.id || s.name === activeSlot.name);
+      if (found) return found;
+    }
+    return activeSlot || mealSlots.find((s: any) => s.active !== false) || null;
+  })();
+
+  const checkSlotWindowStatus = (slot: any) => {
+    if (!slot) {
+      return { isWindowOpen: true, isBeforeOpen: false, isAfterCutoff: false, openStr: '', cutoffStr: '', slotName: '' };
+    }
+    const openStr = slot.booking_open_time || '05:00 AM';
+    const cutoffStr = slot.booking_cutoff_time || '11:59 AM';
+    const slotName = slot.name || 'Meal Slot';
+
+    let openDayjs = parseTimeToDayjs(openStr);
+    let cutoffDayjs = parseTimeToDayjs(cutoffStr);
+    const now = dayjs();
+
+    if (openDayjs && cutoffDayjs && cutoffDayjs.isBefore(openDayjs)) {
+      if (now.isBefore(cutoffDayjs)) {
+        openDayjs = openDayjs.subtract(1, 'day');
+      } else {
+        cutoffDayjs = cutoffDayjs.add(1, 'day');
+      }
+    }
+
+    const isBeforeOpen = openDayjs ? now.isBefore(openDayjs) : false;
+    const isAfterCutoff = cutoffDayjs ? now.isAfter(cutoffDayjs) : false;
+    const isWindowOpen = !isBeforeOpen && !isAfterCutoff;
+
+    return {
+      isWindowOpen,
+      isBeforeOpen,
+      isAfterCutoff,
+      openStr,
+      cutoffStr,
+      slotName,
+    };
+  };
+
+  const slotStatus = checkSlotWindowStatus(effectiveSlot);
+
   const handleConfirmUpiPayment = async (utrNumber?: string) => {
     if (!pendingUpiPayload) return;
+
+    // Strict live cutoff timing verification for UPI flow
+    const windowCheck = checkSlotWindowStatus(effectiveSlot);
+    if (!windowCheck.isWindowOpen) {
+      Alert.alert(
+        'Booking Window Closed 🔒',
+        `The booking cutoff time (${windowCheck.cutoffStr}) has passed for ${windowCheck.slotName}. Payment requests cannot be placed outside this window.`
+      );
+      return;
+    }
+
     setSubmitting(true);
     try {
       const orderCode = await getNextOrderCode();
@@ -492,40 +579,21 @@ export default function BookingScreen({ route, navigation }: any) {
       return;
     }
 
-    // Check slot booking window timing
-    if (activeSlot?.booking_open_time || activeSlot?.booking_cutoff_time) {
-      const openStr = activeSlot.booking_open_time || '05:00 AM';
-      const cutoffStr = activeSlot.booking_cutoff_time || '11:59 AM';
-      let openDayjs = parseTimeToDayjs(openStr);
-      let cutoffDayjs = parseTimeToDayjs(cutoffStr);
-      const now = dayjs();
-
-      if (openDayjs && cutoffDayjs && cutoffDayjs.isBefore(openDayjs)) {
-        if (now.isBefore(cutoffDayjs)) {
-          openDayjs = openDayjs.subtract(1, 'day');
-        } else {
-          cutoffDayjs = cutoffDayjs.add(1, 'day');
-        }
+    // Check slot booking window timing using live Firestore slot definition
+    const windowCheck = checkSlotWindowStatus(effectiveSlot);
+    if (!windowCheck.isWindowOpen) {
+      if (windowCheck.isBeforeOpen) {
+        Alert.alert(
+          'Booking Not Open Yet ⏳',
+          `Bookings for ${windowCheck.slotName} open at ${windowCheck.openStr}. Orders can only be placed between ${windowCheck.openStr} and ${windowCheck.cutoffStr}.`
+        );
+      } else {
+        Alert.alert(
+          'Booking Window Closed 🔒',
+          `The booking cutoff time (${windowCheck.cutoffStr}) has passed for ${windowCheck.slotName}. Orders cannot be placed outside this window.`
+        );
       }
-
-      const isBeforeOpen = openDayjs ? now.isBefore(openDayjs) : false;
-      const isAfterCutoff = cutoffDayjs ? now.isAfter(cutoffDayjs) : false;
-      const isWindowOpen = !isBeforeOpen && !isAfterCutoff;
-
-      if (!isWindowOpen) {
-        if (isBeforeOpen) {
-          Alert.alert(
-            'Booking Not Open Yet ⏳',
-            `Bookings for ${activeSlot.name || 'this slot'} open at ${openStr}. Orders can only be placed between ${openStr} and ${cutoffStr}.`
-          );
-        } else {
-          Alert.alert(
-            'Booking Window Closed 🔒',
-            `The booking cutoff time (${cutoffStr}) has passed for ${activeSlot.name || 'this slot'}. Orders cannot be placed outside this window.`
-          );
-        }
-        return;
-      }
+      return;
     }
 
     if (!receiverName.trim()) {
@@ -813,6 +881,43 @@ export default function BookingScreen({ route, navigation }: any) {
           <Text style={[styles.cardHeader, { color: theme.textPrimary }]}>
             Selected {checkoutItems.length > 1 ? `Meals (${checkoutItems.length})` : 'Meal'}
           </Text>
+
+          {/* Prominent Booking Window Closed Warning Banner */}
+          {checkoutItems.length > 0 && !slotStatus.isWindowOpen && (
+            <View
+              style={[
+                styles.closedWindowBanner,
+                {
+                  backgroundColor: isDark ? '#3E1F0B' : '#FEF3C7',
+                  borderColor: isDark ? '#78350F' : '#F59E0B',
+                },
+              ]}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Text style={{ fontSize: 16 }}>🔒</Text>
+                <Text style={{ fontSize: 13, fontWeight: '800', color: isDark ? '#FDE68A' : '#92400E' }}>
+                  Booking Window Closed
+                </Text>
+              </View>
+              <Text style={{ fontSize: 12, marginTop: 4, lineHeight: 17, color: isDark ? '#FCD34D' : '#B45309' }}>
+                {slotStatus.isBeforeOpen
+                  ? `Bookings for ${slotStatus.slotName} open at ${slotStatus.openStr}. Orders can only be placed between ${slotStatus.openStr} and ${slotStatus.cutoffStr}.`
+                  : `The cutoff time (${slotStatus.cutoffStr}) has passed for ${slotStatus.slotName}. This meal order cannot be processed right now.`}
+              </Text>
+              <TouchableOpacity
+                style={[styles.clearExpiredBtn, { backgroundColor: isDark ? '#78350F' : '#FDE68A' }]}
+                onPress={() => {
+                  clearCart();
+                  Alert.alert('Cart Cleared', 'Expired items have been removed from your cart.');
+                }}
+                activeOpacity={0.7}
+              >
+                <Text style={{ fontSize: 11, fontWeight: '800', color: isDark ? '#FFF' : '#78350F' }}>
+                  🗑️ Clear Cart to Continue
+                </Text>
+              </TouchableOpacity>
+            </View>
+          )}
 
           {checkoutItems.length === 0 ? (
             <View style={styles.emptyCartBox}>
@@ -1319,24 +1424,43 @@ export default function BookingScreen({ route, navigation }: any) {
             deliveryDistanceKm !== null &&
             deliveryDistanceKm > maxDeliveryRadiusKm;
 
+          const isClosed = !slotStatus.isWindowOpen && checkoutItems.length > 0;
+          const isDisabled = submitting || checkoutItems.length === 0 || isClosed || isOutOfRange;
+
           return (
             <TouchableOpacity
               style={[
                 styles.proceedButton,
                 {
-                  backgroundColor: isOutOfRange
+                  backgroundColor: isClosed
+                    ? (isDark ? '#3D2415' : '#FEF3C7')
+                    : isOutOfRange
                     ? (isDark ? '#4A1515' : '#FEE2E2')
                     : theme.primary,
-                  borderColor: isOutOfRange ? '#EF4444' : 'transparent',
-                  borderWidth: isOutOfRange ? 1.5 : 0,
+                  borderColor: isClosed
+                    ? (isDark ? '#78350F' : '#F59E0B')
+                    : isOutOfRange
+                    ? '#EF4444'
+                    : 'transparent',
+                  borderWidth: isClosed || isOutOfRange ? 1.5 : 0,
+                  opacity: isDisabled && !isClosed && !isOutOfRange ? 0.6 : 1,
                 },
               ]}
               onPress={handleProceedToPayment}
-              disabled={submitting || checkoutItems.length === 0}
+              disabled={isDisabled}
               activeOpacity={0.85}
             >
               {submitting ? (
-                <ActivityIndicator color={isOutOfRange ? '#EF4444' : '#FFF'} />
+                <ActivityIndicator color={isClosed ? '#D97706' : isOutOfRange ? '#EF4444' : '#FFF'} />
+              ) : isClosed ? (
+                <Text
+                  style={[
+                    styles.proceedButtonText,
+                    { color: isDark ? '#FDE68A' : '#92400E' },
+                  ]}
+                >
+                  🔒 Booking Closed ({slotStatus.cutoffStr})
+                </Text>
               ) : isOutOfRange ? (
                 <Text
                   style={[
@@ -1667,6 +1791,19 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '900',
     letterSpacing: 0.3,
+  },
+  closedWindowBanner: {
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    marginBottom: 14,
+  },
+  clearExpiredBtn: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    marginTop: 10,
   },
   rangeBadge: {
     flexDirection: 'row',

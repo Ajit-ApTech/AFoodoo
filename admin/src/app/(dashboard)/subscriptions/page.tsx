@@ -9,6 +9,8 @@ import {
   updateDoc,
   increment,
   addDoc,
+  deleteDoc,
+  getDoc,
 } from 'firebase/firestore';
 import {
   Repeat,
@@ -31,7 +33,10 @@ import {
   Utensils,
   ChevronLeft,
   ChevronRight,
+  Trash2,
+  XCircle,
 } from 'lucide-react';
+import { sendExpoPushNotification } from '../../../lib/pushService';
 
 interface SubscriptionDoc {
   id: string;
@@ -54,6 +59,10 @@ interface SubscriptionDoc {
   daily_menu?: Record<string, { id?: string; name?: string; price?: number }>;
   created_at?: string;
   last_auto_booked_date?: string;
+  cancellation_requested?: boolean;
+  cancellation_reason?: string;
+  cancelled_at?: string;
+  cancelled_by?: string;
 }
 
 export default function SubscriptionsManagementPage() {
@@ -77,6 +86,22 @@ export default function SubscriptionsManagementPage() {
 
   // Manual Skip Date picker in Drawer / Modal
   const [newSkipDate, setNewSkipDate] = useState(new Date().toISOString().split('T')[0]);
+
+  // Subscription Cancellation Modal State
+  const [showCancelSubModal, setShowCancelSubModal] = useState(false);
+  const [subToCancel, setSubToCancel] = useState<SubscriptionDoc | null>(null);
+  const [cancelReason, setCancelReason] = useState('Customer requested cancellation');
+  const [customCancelReason, setCustomCancelReason] = useState('');
+  const [isProcessingCancel, setIsProcessingCancel] = useState(false);
+
+  // Subscription Deletion Modal State
+  const [showDeleteSubModal, setShowDeleteSubModal] = useState(false);
+  const [subToDelete, setSubToDelete] = useState<SubscriptionDoc | null>(null);
+  const [isProcessingDelete, setIsProcessingDelete] = useState(false);
+
+  // Bulk Cleanup Modal State
+  const [showBulkCleanupModal, setShowBulkCleanupModal] = useState(false);
+  const [isProcessingBulkCleanup, setIsProcessingBulkCleanup] = useState(false);
 
   // Subscribe directly to Cloud Firestore subscriptions collection
   useEffect(() => {
@@ -113,12 +138,16 @@ export default function SubscriptionsManagementPage() {
   }, [selectedSubForDrawer?.id]);
 
   // Helper to determine status
-  const getSubStatus = (sub: SubscriptionDoc): 'active' | 'paused' | 'expired' => {
+  const getSubStatus = (sub: SubscriptionDoc): 'active' | 'paused' | 'expired' | 'cancelled' => {
     const now = new Date();
     now.setHours(0, 0, 0, 0);
 
-    const isExplicitExpired =
-      sub.status?.toLowerCase() === 'expired' || sub.status?.toLowerCase() === 'cancelled';
+    const isExplicitCancelled = sub.status?.toLowerCase() === 'cancelled';
+    if (isExplicitCancelled) {
+      return 'cancelled';
+    }
+
+    const isExplicitExpired = sub.status?.toLowerCase() === 'expired';
     const isOutOfMeals = typeof sub.meals_remaining === 'number' && sub.meals_remaining <= 0;
     const isPastEndDate = sub.end_date ? new Date(sub.end_date) < now : false;
 
@@ -147,7 +176,7 @@ export default function SubscriptionsManagementPage() {
       const st = getSubStatus(sub);
       if (st === 'active') active++;
       else if (st === 'paused') paused++;
-      else if (st === 'expired') expired++;
+      else if (st === 'expired' || st === 'cancelled') expired++;
 
       if (st === 'active' && sub.end_date) {
         const endDate = new Date(sub.end_date);
@@ -166,7 +195,7 @@ export default function SubscriptionsManagementPage() {
       const st = getSubStatus(sub);
       if (activeTab === 'active' && st !== 'active') return false;
       if (activeTab === 'paused' && st !== 'paused') return false;
-      if (activeTab === 'expired' && st !== 'expired') return false;
+      if (activeTab === 'expired' && st !== 'expired' && st !== 'cancelled') return false;
 
       if (planTypeFilter !== 'ALL') {
         const planName = (sub.plan_type || sub.plan_title || '').toLowerCase();
@@ -344,6 +373,147 @@ export default function SubscriptionsManagementPage() {
     document.body.removeChild(link);
   };
 
+  // Cancel Subscription Handler (Admin Only - No automatic wallet credit)
+  const handleCancelSubscription = async () => {
+    if (!subToCancel) return;
+    setIsProcessingCancel(true);
+    const finalReason = cancelReason === 'Other' && customCancelReason.trim() ? customCancelReason.trim() : cancelReason;
+    const subId = subToCancel.id;
+    const userName = subToCancel.user_name || subToCancel.user_phone || 'Customer';
+
+    try {
+      // 1. Update subscription in Firestore
+      await updateDoc(doc(db, 'subscriptions', subId), {
+        status: 'CANCELLED',
+        is_paused: false,
+        cancellation_requested: false,
+        cancelled_at: new Date().toISOString(),
+        cancelled_by: 'admin',
+        cancellation_reason: finalReason,
+        updated_at: new Date().toISOString(),
+      });
+
+      // 2. Audit Log (note: refund managed manually by admin)
+      await addDoc(collection(db, 'audit_logs'), {
+        action_type: 'SUBSCRIPTION_CANCELLED',
+        admin_email: 'admin@afoodoo.com',
+        details: `Cancelled subscription for ${userName} (${subToCancel.plan_type}). Reason: "${finalReason}". Refund to be managed manually by admin.`,
+        user_id: subToCancel.user_id || '',
+        user_phone: subToCancel.user_phone || '',
+        timestamp: new Date().toISOString(),
+      });
+
+      // 3. Customer Push Notification & App Notification Record
+      const userPhoneDigits = (subToCancel.user_phone || '').replace(/\D/g, '');
+      const userDocId = subToCancel.user_id || (userPhoneDigits ? `usr_${userPhoneDigits}` : '');
+      let fcmToken: string | null = (subToCancel as any).expo_push_token || null;
+      if (!fcmToken && userDocId) {
+        try {
+          const userSnap = await getDoc(doc(db, 'users', userDocId));
+          if (userSnap.exists()) {
+            fcmToken = userSnap.data()?.expo_push_token || userSnap.data()?.fcm_token || null;
+          }
+        } catch (_) {}
+      }
+
+      const pushTitle = '🍱 Subscription Cancelled';
+      const pushBody = `Your ${subToCancel.plan_type || 'meal plan'} subscription has been cancelled (${finalReason}). For any refund queries, please contact kitchen support.`;
+
+      try {
+        await addDoc(collection(db, 'customer_notifications'), {
+          user_id: userDocId,
+          user_phone: userPhoneDigits,
+          subscription_id: subId,
+          title: pushTitle,
+          body: pushBody,
+          status: 'cancelled',
+          timestamp: new Date().toISOString(),
+        });
+      } catch (_) {}
+
+      if (fcmToken) {
+        sendExpoPushNotification([fcmToken], pushTitle, pushBody, {
+          subscriptionId: subId,
+          status: 'cancelled',
+        });
+      }
+
+      setShowCancelSubModal(false);
+      setSubToCancel(null);
+      setIsProcessingCancel(false);
+      if (selectedSubForDrawer?.id === subId) {
+        setSelectedSubForDrawer(null);
+      }
+      alert(`Subscription for ${userName} has been cancelled successfully.\n\nNote: If a refund is required, please manage it manually via the user's wallet or UPI.`);
+    } catch (err: any) {
+      setIsProcessingCancel(false);
+      alert(`Failed to cancel subscription: ${err.message}`);
+    }
+  };
+
+  // Delete Expired/Cancelled Subscription Handler
+  const handleDeleteSubscription = async () => {
+    if (!subToDelete) return;
+    setIsProcessingDelete(true);
+    const subId = subToDelete.id;
+    const userName = subToDelete.user_name || subToDelete.user_phone || 'Customer';
+
+    try {
+      await deleteDoc(doc(db, 'subscriptions', subId));
+
+      await addDoc(collection(db, 'audit_logs'), {
+        action_type: 'SUBSCRIPTION_DELETED',
+        admin_email: 'admin@afoodoo.com',
+        details: `Permanently deleted expired/cancelled subscription #${subId.slice(-6)} for ${userName} (${subToDelete.plan_type})`,
+        timestamp: new Date().toISOString(),
+      });
+
+      setShowDeleteSubModal(false);
+      setSubToDelete(null);
+      setIsProcessingDelete(false);
+      if (selectedSubForDrawer?.id === subId) {
+        setSelectedSubForDrawer(null);
+      }
+    } catch (err: any) {
+      setIsProcessingDelete(false);
+      alert(`Failed to delete subscription: ${err.message}`);
+    }
+  };
+
+  // Bulk Clean Up All Expired/Cancelled Subscriptions
+  const handleBulkCleanupExpired = async () => {
+    const expiredList = subscriptions.filter(s => {
+      const st = getSubStatus(s);
+      return st === 'expired' || st === 'cancelled';
+    });
+
+    if (expiredList.length === 0) {
+      alert('No expired or cancelled subscriptions found to clean up.');
+      return;
+    }
+
+    setIsProcessingBulkCleanup(true);
+    try {
+      for (const s of expiredList) {
+        await deleteDoc(doc(db, 'subscriptions', s.id));
+      }
+
+      await addDoc(collection(db, 'audit_logs'), {
+        action_type: 'SUBSCRIPTIONS_BULK_CLEANUP',
+        admin_email: 'admin@afoodoo.com',
+        details: `Bulk deleted ${expiredList.length} expired/cancelled subscriptions.`,
+        timestamp: new Date().toISOString(),
+      });
+
+      setShowBulkCleanupModal(false);
+      setIsProcessingBulkCleanup(false);
+      alert(`Successfully cleaned up ${expiredList.length} expired/cancelled subscriptions!`);
+    } catch (err: any) {
+      setIsProcessingBulkCleanup(false);
+      alert(`Bulk cleanup failed: ${err.message}`);
+    }
+  };
+
   return (
     <div className="space-y-8">
       {/* Top Header */}
@@ -361,6 +531,19 @@ export default function SubscriptionsManagementPage() {
         </div>
 
         <div className="flex items-center gap-3">
+          {activeTab === 'expired' && subscriptions.some(s => {
+            const st = getSubStatus(s);
+            return st === 'expired' || st === 'cancelled';
+          }) && (
+            <button
+              onClick={() => setShowBulkCleanupModal(true)}
+              className="flex items-center gap-2 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 px-4 py-2.5 rounded-xl text-xs font-semibold transition shadow-sm"
+            >
+              <Trash2 className="h-4 w-4 text-rose-400" />
+              <span>Clean Up Expired</span>
+            </button>
+          )}
+
           <button
             onClick={handleExportCSV}
             className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-4 py-2.5 rounded-xl text-xs font-semibold transition shadow-sm"
@@ -584,6 +767,11 @@ export default function SubscriptionsManagementPage() {
                             <div className="text-[11px] font-mono text-slate-400">
                               {sub.user_phone || 'No phone'}
                             </div>
+                            {sub.cancellation_requested && status !== 'cancelled' && (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse mt-1">
+                                <AlertTriangle className="h-2.5 w-2.5" /> Cancel Requested
+                              </span>
+                            )}
                           </div>
                         </div>
                       </td>
@@ -624,6 +812,10 @@ export default function SubscriptionsManagementPage() {
                         ) : status === 'paused' ? (
                           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black uppercase bg-amber-500/10 text-amber-400 border border-amber-500/30">
                             <PauseCircle className="h-3 w-3" /> PAUSED
+                          </span>
+                        ) : status === 'cancelled' ? (
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black uppercase bg-rose-500/10 text-rose-400 border border-rose-500/30" title={sub.cancellation_reason || 'Cancelled by admin'}>
+                            <XCircle className="h-3 w-3" /> CANCELLED
                           </span>
                         ) : (
                           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black uppercase bg-slate-800 text-slate-400 border border-slate-700">
@@ -705,14 +897,43 @@ export default function SubscriptionsManagementPage() {
                         </div>
                       </td>
 
-                      {/* Action Button */}
+                      {/* Action Buttons */}
                       <td className="py-4 px-4 text-right" onClick={e => e.stopPropagation()}>
-                        <button
-                          onClick={() => setSelectedSubForDrawer(sub)}
-                          className="px-3.5 py-1.5 rounded-xl bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/30 text-xs font-bold transition shadow-sm"
-                        >
-                          Manage
-                        </button>
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            onClick={() => setSelectedSubForDrawer(sub)}
+                            className="px-3 py-1.5 rounded-xl bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/30 text-xs font-bold transition shadow-sm"
+                          >
+                            Manage
+                          </button>
+
+                          {status !== 'expired' && status !== 'cancelled' ? (
+                            <button
+                              onClick={() => {
+                                setSubToCancel(sub);
+                                setCancelReason('Customer requested cancellation');
+                                setCustomCancelReason('');
+                                setShowCancelSubModal(true);
+                              }}
+                              title="Cancel Subscription Plan"
+                              className="px-2.5 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-xs font-bold transition flex items-center gap-1"
+                            >
+                              <XCircle className="h-3.5 w-3.5" />
+                              <span className="hidden sm:inline">Cancel</span>
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => {
+                                setSubToDelete(sub);
+                                setShowDeleteSubModal(true);
+                              }}
+                              title="Delete Expired / Cancelled Record"
+                              className="p-1.5 rounded-xl bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 border border-slate-700 hover:border-rose-500/30 transition"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -1042,13 +1263,39 @@ export default function SubscriptionsManagementPage() {
               )}
             </div>
 
-            {/* Drawer Bottom Close */}
-            <div className="pt-4 border-t border-slate-800 flex justify-end">
+            {/* Drawer Bottom Actions */}
+            <div className="pt-4 border-t border-slate-800 space-y-2">
+              {getSubStatus(selectedSubForDrawer) !== 'expired' && getSubStatus(selectedSubForDrawer) !== 'cancelled' ? (
+                <button
+                  onClick={() => {
+                    setSubToCancel(selectedSubForDrawer);
+                    setCancelReason('Customer requested cancellation');
+                    setCustomCancelReason('');
+                    setShowCancelSubModal(true);
+                  }}
+                  className="w-full py-2.5 bg-rose-600/10 hover:bg-rose-600/20 text-rose-400 border border-rose-500/30 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2"
+                >
+                  <XCircle className="h-4 w-4" />
+                  <span>Cancel Subscription Plan</span>
+                </button>
+              ) : (
+                <button
+                  onClick={() => {
+                    setSubToDelete(selectedSubForDrawer);
+                    setShowDeleteSubModal(true);
+                  }}
+                  className="w-full py-2.5 bg-rose-600/10 hover:bg-rose-600/20 text-rose-400 border border-rose-500/30 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  <span>Delete Subscription Record</span>
+                </button>
+              )}
+
               <button
                 onClick={() => setSelectedSubForDrawer(null)}
                 className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold transition"
               >
-                Done
+                Close Drawer
               </button>
             </div>
           </div>
@@ -1115,6 +1362,253 @@ export default function SubscriptionsManagementPage() {
               </button>
             </div>
           </form>
+        </div>
+      ) : null}
+
+      {/* Cancel Subscription Modal */}
+      {showCancelSubModal && subToCancel ? (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-slate-900 border border-slate-800 max-w-md w-full rounded-2xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="text-base font-extrabold text-white flex items-center gap-2">
+                <AlertTriangle className="h-5 w-5 text-rose-400" />
+                <span>Cancel Plan: {subToCancel.plan_type}</span>
+              </h3>
+              <button
+                type="button"
+                disabled={isProcessingCancel}
+                onClick={() => setShowCancelSubModal(false)}
+                className="text-slate-400 hover:text-white"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Subscriber & Plan Summary */}
+            <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 text-xs space-y-2">
+              <div className="flex justify-between text-slate-300">
+                <span>Customer:</span>
+                <span className="font-bold text-white">{subToCancel.user_name || subToCancel.user_phone || 'Customer'}</span>
+              </div>
+              <div className="flex justify-between text-slate-300">
+                <span>Phone:</span>
+                <span className="font-mono text-slate-200">{subToCancel.user_phone || 'N/A'}</span>
+              </div>
+              <div className="flex justify-between text-slate-300">
+                <span>Meals Remaining:</span>
+                <span className="font-mono font-bold text-purple-400">
+                  {subToCancel.meals_remaining ?? 0} / {subToCancel.meals_total ?? '—'} meals
+                </span>
+              </div>
+              <div className="flex justify-between text-slate-300">
+                <span>Estimated Value of Leftover Meals:</span>
+                <span className="font-mono font-bold text-amber-400">
+                  ₹{Math.round(((subToCancel.meals_remaining ?? 0) / (subToCancel.meals_total || 1)) * (subToCancel.price || 0))}
+                </span>
+              </div>
+            </div>
+
+            {/* Manual Refund Policy Banner */}
+            <div className="bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs p-3 rounded-xl space-y-1">
+              <p className="font-bold flex items-center gap-1.5">
+                <span>ℹ️</span>
+                <span>Manual Refund Management</span>
+              </p>
+              <p className="text-[11px] text-amber-400/90 leading-relaxed">
+                Cancelling this subscription will <strong>not</strong> automatically credit funds to the customer wallet. You can manually adjust the user&apos;s wallet balance in the Users tab or process a direct UPI refund as requested.
+              </p>
+            </div>
+
+            {/* Reason Selection */}
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-slate-300 block">
+                Select Cancellation Reason:
+              </label>
+              <div className="space-y-1.5">
+                {[
+                  'Customer requested cancellation',
+                  'Customer relocated / address outside delivery area',
+                  'Health or dietary preferences',
+                  'Other',
+                ].map(r => (
+                  <label
+                    key={r}
+                    className={`flex items-center gap-2.5 p-2 rounded-xl border text-xs cursor-pointer transition-all ${
+                      cancelReason === r
+                        ? 'bg-purple-500/10 border-purple-500/40 text-purple-300 font-bold'
+                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="cancelSubReason"
+                      value={r}
+                      checked={cancelReason === r}
+                      onChange={e => setCancelReason(e.target.value)}
+                      className="accent-purple-500"
+                    />
+                    <span>{r}</span>
+                  </label>
+                ))}
+              </div>
+
+              {cancelReason === 'Other' && (
+                <textarea
+                  value={customCancelReason}
+                  onChange={e => setCustomCancelReason(e.target.value)}
+                  placeholder="Enter custom cancellation reason..."
+                  rows={2}
+                  className="w-full mt-2 bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-purple-500 resize-none"
+                />
+              )}
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                disabled={isProcessingCancel}
+                onClick={() => setShowCancelSubModal(false)}
+                className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-2.5 rounded-xl text-xs transition-all disabled:opacity-50"
+              >
+                Keep Plan
+              </button>
+              <button
+                type="button"
+                disabled={isProcessingCancel}
+                onClick={handleCancelSubscription}
+                className="flex-1 bg-rose-600 hover:bg-rose-500 text-white font-extrabold py-2.5 rounded-xl text-xs transition-all shadow-lg shadow-rose-600/20 flex items-center justify-center gap-1.5 disabled:opacity-50"
+              >
+                {isProcessingCancel ? (
+                  <span>Processing...</span>
+                ) : (
+                  <>
+                    <XCircle className="h-4 w-4" />
+                    <span>Confirm Cancel</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Delete Subscription Modal */}
+      {showDeleteSubModal && subToDelete ? (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-slate-900 border border-slate-800 max-w-md w-full rounded-2xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="text-base font-extrabold text-white flex items-center gap-2">
+                <Trash2 className="h-5 w-5 text-rose-400" />
+                <span>Permanently Delete Record</span>
+              </h3>
+              <button
+                type="button"
+                disabled={isProcessingDelete}
+                onClick={() => setShowDeleteSubModal(false)}
+                className="text-slate-400 hover:text-white"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 text-xs space-y-1.5">
+              <p className="text-slate-200">
+                Subscriber: <span className="font-bold text-white">{subToDelete.user_name || subToDelete.user_phone || 'Customer'}</span>
+              </p>
+              <p className="text-slate-200">
+                Plan: <span className="font-bold text-purple-400">{subToDelete.plan_type}</span>
+              </p>
+              <p className="text-slate-400 text-[11px]">
+                Status: <span className="font-mono uppercase text-rose-400 font-bold">{getSubStatus(subToDelete)}</span>
+              </p>
+            </div>
+
+            <p className="text-xs text-slate-400 leading-relaxed">
+              This will permanently delete this expired/cancelled subscription record from Cloud Firestore to keep your workflow clean. This action cannot be undone.
+            </p>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                disabled={isProcessingDelete}
+                onClick={() => setShowDeleteSubModal(false)}
+                className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-2.5 rounded-xl text-xs transition-all disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isProcessingDelete}
+                onClick={handleDeleteSubscription}
+                className="flex-1 bg-rose-600 hover:bg-rose-500 text-white font-extrabold py-2.5 rounded-xl text-xs transition-all shadow-lg shadow-rose-600/20 flex items-center justify-center gap-1.5 disabled:opacity-50"
+              >
+                {isProcessingDelete ? (
+                  <span>Deleting...</span>
+                ) : (
+                  <>
+                    <Trash2 className="h-4 w-4" />
+                    <span>Delete Record</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Bulk Cleanup Modal */}
+      {showBulkCleanupModal ? (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-slate-900 border border-slate-800 max-w-md w-full rounded-2xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="text-base font-extrabold text-white flex items-center gap-2">
+                <Trash2 className="h-5 w-5 text-rose-400" />
+                <span>Clean Up All Expired Subscriptions</span>
+              </h3>
+              <button
+                type="button"
+                disabled={isProcessingBulkCleanup}
+                onClick={() => setShowBulkCleanupModal(false)}
+                className="text-slate-400 hover:text-white"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed">
+              Are you sure you want to permanently remove all expired and cancelled subscription records from Cloud Firestore?
+            </p>
+            <p className="text-[11px] text-amber-400/90 bg-amber-500/10 border border-amber-500/20 p-2.5 rounded-xl">
+              ⚠️ Active and paused meal subscriptions will <strong>not</strong> be affected.
+            </p>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                disabled={isProcessingBulkCleanup}
+                onClick={() => setShowBulkCleanupModal(false)}
+                className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-2.5 rounded-xl text-xs transition-all disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isProcessingBulkCleanup}
+                onClick={handleBulkCleanupExpired}
+                className="flex-1 bg-rose-600 hover:bg-rose-500 text-white font-extrabold py-2.5 rounded-xl text-xs transition-all shadow-lg shadow-rose-600/20 flex items-center justify-center gap-1.5 disabled:opacity-50"
+              >
+                {isProcessingBulkCleanup ? (
+                  <span>Cleaning up...</span>
+                ) : (
+                  <>
+                    <Trash2 className="h-4 w-4" />
+                    <span>Confirm Cleanup</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
         </div>
       ) : null}
     </div>

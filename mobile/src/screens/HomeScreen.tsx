@@ -190,6 +190,7 @@ export default function HomeScreen({ navigation }: any) {
   // Global Realtime Push Broadcast Notification Listener
   const lastBroadcastIdRef = React.useRef<string>('');
   const initialBroadcastLoadRef = React.useRef<boolean>(true);
+  const seenBroadcastIdsRef = React.useRef<Set<string>>(new Set());
 
   useEffect(() => {
     try {
@@ -202,9 +203,29 @@ export default function HomeScreen({ navigation }: any) {
             .map((d: any) => ({ id: d.id, ...d.data() }))
             .sort((a: any, b: any) => (b.timestamp || '').localeCompare(a.timestamp || ''));
 
+          // On first load, seed all current broadcast IDs as already seen so existing items don't alert
+          if (initialBroadcastLoadRef.current) {
+            list.forEach((b: any) => seenBroadcastIdsRef.current.add(b.id));
+            if (list[0]) {
+              lastBroadcastIdRef.current = list[0].id;
+            }
+            initialBroadcastLoadRef.current = false;
+            return;
+          }
+
           const latestBroadcast = list[0];
-          if (latestBroadcast && latestBroadcast.id !== lastBroadcastIdRef.current) {
-            if (!initialBroadcastLoadRef.current) {
+          // Only trigger if this specific broadcast is brand new (never seen before)
+          if (latestBroadcast && !seenBroadcastIdsRef.current.has(latestBroadcast.id)) {
+            seenBroadcastIdsRef.current.add(latestBroadcast.id);
+            lastBroadcastIdRef.current = latestBroadcast.id;
+
+            // Only notify if sent recently (within last 5 minutes) to avoid popups for older items
+            const broadcastAgeMs = latestBroadcast.timestamp
+              ? Date.now() - new Date(latestBroadcast.timestamp).getTime()
+              : 0;
+            const isRecent = broadcastAgeMs >= 0 && broadcastAgeMs < 5 * 60 * 1000;
+
+            if (isRecent) {
               const bTitle = latestBroadcast.title || '📢 AFoodoo Announcement';
               const bBody = latestBroadcast.body || '';
 
@@ -218,9 +239,7 @@ export default function HomeScreen({ navigation }: any) {
                 Alert.alert(bTitle, bBody);
               }
             }
-            lastBroadcastIdRef.current = latestBroadcast.id;
           }
-          initialBroadcastLoadRef.current = false;
         }
       });
       return unsub;

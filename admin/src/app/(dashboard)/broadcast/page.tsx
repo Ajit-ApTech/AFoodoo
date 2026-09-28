@@ -10,6 +10,7 @@ import {
   doc,
   query,
   onSnapshot,
+  writeBatch,
 } from 'firebase/firestore';
 import {
   Bell,
@@ -87,12 +88,18 @@ export default function PushBroadcasterPage() {
   useEffect(() => {
     try {
       const q = collection(db, 'broadcast_notifications');
-      const unsub = onSnapshot(q, snap => {
-        const list: BroadcastItem[] = snap.docs
-          .map(d => ({ id: d.id, ...d.data() } as BroadcastItem))
-          .sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
-        setBroadcasts(list);
-      });
+      const unsub = onSnapshot(
+        q,
+        snap => {
+          const list: BroadcastItem[] = snap.docs
+            .map(d => ({ id: d.id, ...d.data() } as BroadcastItem))
+            .sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+          setBroadcasts(list);
+        },
+        err => {
+          console.log('Notice listening to broadcast_notifications:', err.message);
+        }
+      );
       return unsub;
     } catch (e) {
       console.error('Error listening to broadcast_notifications:', e);
@@ -103,12 +110,18 @@ export default function PushBroadcasterPage() {
   useEffect(() => {
     try {
       const q = collection(db, 'customer_notifications');
-      const unsub = onSnapshot(q, snap => {
-        const list: CustomerNotificationItem[] = snap.docs
-          .map(d => ({ id: d.id, ...d.data() } as CustomerNotificationItem))
-          .sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
-        setCustomerNotifs(list);
-      });
+      const unsub = onSnapshot(
+        q,
+        snap => {
+          const list: CustomerNotificationItem[] = snap.docs
+            .map(d => ({ id: d.id, ...d.data() } as CustomerNotificationItem))
+            .sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+          setCustomerNotifs(list);
+        },
+        err => {
+          console.log('Notice listening to customer_notifications:', err.message);
+        }
+      );
       return unsub;
     } catch (e) {
       console.error('Error listening to customer_notifications:', e);
@@ -194,8 +207,11 @@ export default function PushBroadcasterPage() {
     }
     setActionLoading(true);
     try {
-      const deletePromises = broadcasts.map(b => deleteDoc(doc(db, 'broadcast_notifications', b.id)));
-      await Promise.all(deletePromises);
+      const batch = writeBatch(db);
+      broadcasts.forEach(b => {
+        batch.delete(doc(db, 'broadcast_notifications', b.id));
+      });
+      await batch.commit();
       setStatusMessage(`Cleared all ${broadcasts.length} broadcast notifications.`);
       setTimeout(() => setStatusMessage(null), 4000);
     } catch (err: any) {
@@ -221,8 +237,11 @@ export default function PushBroadcasterPage() {
     }
     setActionLoading(true);
     try {
-      const deletePromises = expired.map(b => deleteDoc(doc(db, 'broadcast_notifications', b.id)));
-      await Promise.all(deletePromises);
+      const batch = writeBatch(db);
+      expired.forEach(b => {
+        batch.delete(doc(db, 'broadcast_notifications', b.id));
+      });
+      await batch.commit();
       setStatusMessage(`Cleared ${expired.length} expired broadcasts successfully.`);
       setTimeout(() => setStatusMessage(null), 4000);
     } catch (err: any) {
@@ -252,8 +271,11 @@ export default function PushBroadcasterPage() {
     if (!confirm(`Clear all ${customerNotifs.length} order notifications?`)) return;
     setActionLoading(true);
     try {
-      const deletePromises = customerNotifs.map(n => deleteDoc(doc(db, 'customer_notifications', n.id)));
-      await Promise.all(deletePromises);
+      const batch = writeBatch(db);
+      customerNotifs.forEach(n => {
+        batch.delete(doc(db, 'customer_notifications', n.id));
+      });
+      await batch.commit();
       setStatusMessage(`Cleared all ${customerNotifs.length} order notifications.`);
       setTimeout(() => setStatusMessage(null), 4000);
     } catch (err: any) {

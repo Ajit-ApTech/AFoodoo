@@ -376,113 +376,190 @@ export default function OrderTrackingScreen({ route, navigation }: any) {
                   {/* Expanded Content Drawer */}
                   {isExpanded ? (
                     <View style={styles.expandedContent}>
-                      {ord.otp_code ? (
+                      {/* Cancellation Notice Banner */}
+                      {ord.status === 'cancelled' && (
+                        <View
+                          style={{
+                            backgroundColor: '#FFEBEE',
+                            borderColor: '#FFCDD2',
+                            borderWidth: 1.5,
+                            borderRadius: 14,
+                            padding: 14,
+                            marginBottom: 14,
+                          }}
+                        >
+                          <Text style={{ fontSize: 14, fontWeight: '800', color: '#C62828' }}>
+                            ❌ Order Cancelled
+                          </Text>
+                          <Text style={{ fontSize: 12, color: '#B71C1C', marginTop: 3, lineHeight: 17 }}>
+                            {ord.cancellation_reason
+                              ? `Reason: ${ord.cancellation_reason}`
+                              : 'This order was cancelled by AFoodoo kitchen.'}
+                          </Text>
+                          {ord.payment_method === 'wallet' && (
+                            <Text style={{ fontSize: 12, fontWeight: '700', color: '#2E7D32', marginTop: 6 }}>
+                              ✓ Full refund of ₹{Number(ord.total_amount ?? ord.price ?? 0).toFixed(0)} credited to your AFoodoo Wallet balance.
+                            </Text>
+                          )}
+                        </View>
+                      )}
+
+                      {/* Cash on Delivery (COD) High-Visibility Reminder */}
+                      {ord.payment_method === 'cod' && ord.status !== 'cancelled' && (
+                        <View
+                          style={{
+                            backgroundColor: ord.status === 'delivered' ? '#E8F5E9' : '#FFF8E1',
+                            borderColor: ord.status === 'delivered' ? '#A5D6A7' : '#FFE082',
+                            borderWidth: 1.5,
+                            borderRadius: 14,
+                            padding: 14,
+                            marginBottom: 14,
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                          }}
+                        >
+                          <Text style={{ fontSize: 26, marginRight: 12 }}>💵</Text>
+                          <View style={{ flex: 1 }}>
+                            <Text
+                              style={{
+                                fontSize: 13,
+                                fontWeight: '900',
+                                color: ord.status === 'delivered' ? '#2E7D32' : '#E65100',
+                                textTransform: 'uppercase',
+                                letterSpacing: 0.5,
+                              }}
+                            >
+                              {ord.status === 'delivered'
+                                ? 'Cash Paid on Delivery ✓'
+                                : 'Cash on Delivery (Pending)'}
+                            </Text>
+                            <Text
+                              style={{
+                                fontSize: 12,
+                                color: ord.status === 'delivered' ? '#388E3C' : '#BF360C',
+                                marginTop: 2,
+                                lineHeight: 16,
+                              }}
+                            >
+                              {ord.status === 'delivered'
+                                ? `₹${Number(ord.total_amount ?? ord.price ?? 0).toFixed(0)} cash was handed to the delivery partner.`
+                                : `Please keep ₹${Number(ord.total_amount ?? ord.price ?? 0).toFixed(0)} cash ready for the delivery partner upon arrival.`}
+                            </Text>
+                          </View>
+                        </View>
+                      )}
+
+                      {ord.otp_code && ord.status !== 'cancelled' ? (
                         <Text style={[styles.otpNotice, { color: theme.textSecondary }]}>
                           🔒 Share OTP <Text style={{ fontWeight: '800', color: theme.primary }}>{ord.otp_code}</Text> with delivery rider upon receiving your meal.
                         </Text>
                       ) : null}
 
-                      {/* Live Delivery Stepper */}
-                      <View style={styles.stepperSection}>
-                        <View style={styles.stepperHeader}>
-                          <Text style={[styles.cardHeader, { color: theme.textPrimary }]}>
-                            Live Delivery Progress
-                          </Text>
-                          <View style={styles.liveBadge}>
-                            <View style={styles.livePulse} />
-                            <Text style={styles.liveText}>REALTIME SYNC</Text>
-                          </View>
-                        </View>
-
-                        <View style={styles.stepperContainer}>
-                          {steps.map((step, index) => {
-                            const isCompleted = index <= currentStep;
-                            const isCurrent = index === currentStep;
-
-                            return (
-                              <View key={index} style={styles.stepRow}>
-                                <View style={styles.stepIndicatorColumn}>
-                                  <View
-                                    style={[
-                                      styles.stepDot,
-                                      {
-                                        backgroundColor: isCompleted
-                                          ? theme.statusSuccessText
-                                          : isCurrent
-                                          ? theme.primary
-                                          : theme.inputBorder,
-                                      },
-                                    ]}
-                                  >
-                                    <Text style={styles.stepDotText}>
-                                      {isCompleted ? '✓' : index + 1}
-                                    </Text>
-                                  </View>
-                                  {index < steps.length - 1 && (
-                                    <View
-                                      style={[
-                                        styles.stepLine,
-                                        {
-                                          backgroundColor:
-                                            index < currentStep
-                                              ? theme.statusSuccessText
-                                              : theme.inputBorder,
-                                        },
-                                      ]}
-                                    />
-                                  )}
-                                </View>
-
-                                <View style={styles.stepContent}>
-                                  <Text
-                                    style={[
-                                      styles.stepTitle,
-                                      {
-                                        color: isCurrent ? theme.textPrimary : theme.textMuted,
-                                        fontWeight: isCurrent ? '800' : '600',
-                                      },
-                                    ]}
-                                  >
-                                    {step.title}
-                                  </Text>
-                                  <Text style={[styles.stepDesc, { color: theme.textSecondary }]}>
-                                    {step.desc}
-                                  </Text>
-                                </View>
+                      {/* Live Delivery Stepper & Delivery Window */}
+                      {ord.status !== 'cancelled' && (
+                        <>
+                          <View style={styles.stepperSection}>
+                            <View style={styles.stepperHeader}>
+                              <Text style={[styles.cardHeader, { color: theme.textPrimary }]}>
+                                Live Delivery Progress
+                              </Text>
+                              <View style={styles.liveBadge}>
+                                <View style={styles.livePulse} />
+                                <Text style={styles.liveText}>REALTIME SYNC</Text>
                               </View>
-                            );
-                          })}
-                        </View>
-                      </View>
+                            </View>
 
-                      {/* Delivery Window Card */}
-                      <View
-                        style={[
-                          styles.etaCard,
-                          { backgroundColor: theme.statusSuccessBg, borderColor: theme.statusSuccessText },
-                        ]}
-                      >
-                        <Text style={[styles.etaTitle, { color: theme.statusSuccessText }]}>
-                          ⏰ Estimated Delivery Window
-                        </Text>
-                        <Text style={[styles.etaTime, { color: theme.statusSuccessText }]}>
-                          {ord.delivery_window ||
-                            (ord.delivery_start && ord.delivery_end
-                              ? `${ord.delivery_start} – ${ord.delivery_end}`
-                              : ord.slot_name?.toLowerCase().includes('dinner')
-                              ? '7:30 PM – 8:30 PM (Dinner Slot)'
-                              : '1:00 PM – 2:00 PM (Lunch Slot)')}
-                        </Text>
-                        {ord.delivery_address?.line1 ? (
-                          <Text style={[styles.etaSub, { color: theme.statusSuccessText }]}>
-                            📍 Delivering to: {ord.delivery_address.line1}
-                          </Text>
-                        ) : (
-                          <Text style={[styles.etaSub, { color: theme.statusSuccessText }]}>
-                            Thermal insulated tiffin box keeps your food hot and fresh.
-                          </Text>
-                        )}
-                      </View>
+                            <View style={styles.stepperContainer}>
+                              {steps.map((step, index) => {
+                                const isCompleted = index <= currentStep;
+                                const isCurrent = index === currentStep;
+
+                                return (
+                                  <View key={index} style={styles.stepRow}>
+                                    <View style={styles.stepIndicatorColumn}>
+                                      <View
+                                        style={[
+                                          styles.stepDot,
+                                          {
+                                            backgroundColor: isCompleted
+                                              ? theme.statusSuccessText
+                                              : isCurrent
+                                              ? theme.primary
+                                              : theme.inputBorder,
+                                          },
+                                        ]}
+                                      >
+                                        <Text style={styles.stepDotText}>
+                                          {isCompleted ? '✓' : index + 1}
+                                        </Text>
+                                      </View>
+                                      {index < steps.length - 1 && (
+                                        <View
+                                          style={[
+                                            styles.stepLine,
+                                            {
+                                              backgroundColor:
+                                                index < currentStep
+                                                  ? theme.statusSuccessText
+                                                  : theme.inputBorder,
+                                            },
+                                          ]}
+                                        />
+                                      )}
+                                    </View>
+
+                                    <View style={styles.stepContent}>
+                                      <Text
+                                        style={[
+                                          styles.stepTitle,
+                                          {
+                                            color: isCurrent ? theme.textPrimary : theme.textMuted,
+                                            fontWeight: isCurrent ? '800' : '600',
+                                          },
+                                        ]}
+                                      >
+                                        {step.title}
+                                      </Text>
+                                      <Text style={[styles.stepDesc, { color: theme.textSecondary }]}>
+                                        {step.desc}
+                                      </Text>
+                                    </View>
+                                  </View>
+                                );
+                              })}
+                            </View>
+                          </View>
+
+                          {/* Delivery Window Card */}
+                          <View
+                            style={[
+                              styles.etaCard,
+                              { backgroundColor: theme.statusSuccessBg, borderColor: theme.statusSuccessText },
+                            ]}
+                          >
+                            <Text style={[styles.etaTitle, { color: theme.statusSuccessText }]}>
+                              ⏰ Estimated Delivery Window
+                            </Text>
+                            <Text style={[styles.etaTime, { color: theme.statusSuccessText }]}>
+                              {ord.delivery_window ||
+                                (ord.delivery_start && ord.delivery_end
+                                  ? `${ord.delivery_start} – ${ord.delivery_end}`
+                                  : ord.slot_name?.toLowerCase().includes('dinner')
+                                  ? '7:30 PM – 8:30 PM (Dinner Slot)'
+                                  : '1:00 PM – 2:00 PM (Lunch Slot)')}
+                            </Text>
+                            {ord.delivery_address?.line1 ? (
+                              <Text style={[styles.etaSub, { color: theme.statusSuccessText }]}>
+                                📍 Delivering to: {ord.delivery_address.line1}
+                              </Text>
+                            ) : (
+                              <Text style={[styles.etaSub, { color: theme.statusSuccessText }]}>
+                                Thermal insulated tiffin box keeps your food hot and fresh.
+                              </Text>
+                            )}
+                          </View>
+                        </>
+                      )}
 
                       {/* Ordered Meals & Complete Payment Details */}
                       {(() => {

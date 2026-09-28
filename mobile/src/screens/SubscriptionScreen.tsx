@@ -11,6 +11,7 @@ import {
   Image,
   Platform,
   StatusBar,
+  Linking,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppStore } from '../store/appStore';
@@ -220,11 +221,12 @@ export default function SubscriptionScreen({ navigation, route }: any) {
     const expired: any[] = [];
 
     subscriptions.forEach((sub: any) => {
-      const isExpired =
-        sub.status === 'expired' ||
-        sub.status === 'cancelled' ||
-        (sub.end_date && now.isAfter(dayjs(sub.end_date), 'day')) ||
-        (typeof sub.meals_remaining === 'number' && sub.meals_remaining <= 0);
+      const statusLower = (sub.status || '').toLowerCase();
+      const isCancelled = statusLower === 'cancelled';
+      const isExpiredStatus = statusLower === 'expired';
+      const isPastEndDate = Boolean(sub.end_date && now.isAfter(dayjs(sub.end_date), 'day'));
+      const isOutOfMeals = typeof sub.meals_remaining === 'number' && sub.meals_remaining <= 0;
+      const isExpired = isCancelled || isExpiredStatus || isPastEndDate || isOutOfMeals;
 
       if (isExpired) {
         expired.push(sub);
@@ -236,11 +238,12 @@ export default function SubscriptionScreen({ navigation, route }: any) {
     return { activeSubs: active, expiredSubs: expired };
   }, [subscriptions]);
 
-  // Read live UPI ID from Cloud Firestore settings/delivery_config
+  // Read live UPI ID & Admin WhatsApp/Support Phone from Cloud Firestore settings/delivery_config
   const [upiId, setUpiId] = useState('afoodoo@upi');
   const [merchantName, setMerchantName] = useState('AFoodoo Kitchen');
   const [customQrUrl, setCustomQrUrl] = useState('');
   const [showUpiModal, setShowUpiModal] = useState(false);
+  const [adminContactPhone, setAdminContactPhone] = useState('917491009852');
 
   useEffect(() => {
     try {
@@ -252,11 +255,68 @@ export default function SubscriptionScreen({ navigation, route }: any) {
           if (d.upi_id) setUpiId(d.upi_id);
           if (d.merchant_name) setMerchantName(d.merchant_name);
           if (d.upi_qr_image_url) setCustomQrUrl(d.upi_qr_image_url);
+          if (d.rider_whatsapp) setAdminContactPhone(d.rider_whatsapp);
+          else if (d.support_phone) setAdminContactPhone(d.support_phone);
         }
       });
       return unsub;
     } catch (e) {}
   }, []);
+
+  // Request Subscription Cancellation Flow (Customer to Admin)
+  const handleRequestCancellation = (sub: any) => {
+    if (!sub?.id) return;
+    Alert.alert(
+      'Request Plan Cancellation ⚠️',
+      `Are you sure you want to request cancellation for your ${sub.plan_type || 'meal plan'}? Our kitchen admin will review and process your request.`,
+      [
+        { text: 'Keep Plan', style: 'cancel' },
+        {
+          text: 'Submit Request',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const { doc, updateDoc, addDoc, collection } = require('firebase/firestore');
+              const { firestore } = require('../firebaseConfig');
+              await updateDoc(doc(firestore, 'subscriptions', sub.id), {
+                cancellation_requested: true,
+                cancellation_requested_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              });
+
+              await addDoc(collection(firestore, 'audit_logs'), {
+                action_type: 'SUBSCRIPTION_CANCELLATION_REQUESTED',
+                admin_email: 'system@afoodoo.com',
+                details: `Customer ${user?.name || user?.phone || 'Customer'} requested cancellation for ${sub.plan_type} (#${sub.id.slice(-6).toUpperCase()})`,
+                user_id: user?.id || sub.user_id || '',
+                user_phone: user?.phone || sub.user_phone || '',
+                timestamp: new Date().toISOString(),
+              });
+
+              Alert.alert(
+                'Cancellation Request Sent ✓',
+                'Your cancellation request has been submitted to the kitchen admin. Our team will contact you regarding your remaining meals and reconciliation.'
+              );
+            } catch (e: any) {
+              Alert.alert('Error', e.message || 'Failed to submit request');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // Direct WhatsApp Kitchen Contact for Subscription Cancellation
+  const handleContactAdminWhatsApp = (sub: any) => {
+    const phoneDigits = adminContactPhone.replace(/\D/g, '') || '917491009852';
+    const planName = sub?.plan_type || sub?.plan_title || 'Subscription Plan';
+    const displayCode = sub?.id ? sub.id.slice(-6).toUpperCase() : '';
+    const text = `Hi AFoodoo Admin, I would like to request cancellation for my ${planName} subscription (ID: #${displayCode}) registered under phone: ${user?.phone || ''}. Please help with the cancellation.`;
+    const url = `https://wa.me/${phoneDigits}?text=${encodeURIComponent(text)}`;
+    Linking.openURL(url).catch(() => {
+      Alert.alert('WhatsApp Error', 'Could not open WhatsApp on this device.');
+    });
+  };
 
   // Dynamic scheduled days for Menu Customization modal (7 days starting today or from sub start_date)
   const menuScheduleDays = useMemo(() => {
@@ -687,7 +747,7 @@ export default function SubscriptionScreen({ navigation, route }: any) {
                     {/* Header Row */}
                     <View style={styles.activeHeaderRow}>
                       <View style={{ flex: 1 }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                           <Text style={[styles.activeTitle, { color: theme.textPrimary }]}>
                             {sub.plan_type || sub.plan_title}
                           </Text>
@@ -706,6 +766,13 @@ export default function SubscriptionScreen({ navigation, route }: any) {
                               {isPaused ? 'PAUSED' : 'ACTIVE'}
                             </Text>
                           </View>
+                          {sub.cancellation_requested && (sub.status || '').toLowerCase() !== 'cancelled' && (
+                            <View style={[styles.statusTag, { backgroundColor: '#FEF3C7' }]}>
+                              <Text style={[styles.statusTagText, { color: '#B45309' }]}>
+                                CANCEL PENDING
+                              </Text>
+                            </View>
+                          )}
                         </View>
                         <Text style={[styles.activeDate, { color: theme.textSecondary }]}>
                           Valid until {dayjs(sub.end_date).format('MMM DD, YYYY')}
@@ -813,16 +880,24 @@ export default function SubscriptionScreen({ navigation, route }: any) {
                 >
                   <View style={styles.activeHeaderRow}>
                     <View style={{ flex: 1 }}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                         <Text style={[styles.activeTitle, { color: theme.textSecondary }]}>
                           {sub.plan_type || sub.plan_title}
                         </Text>
-                        <View style={styles.expiredTag}>
-                          <Text style={styles.expiredTagText}>EXPIRED</Text>
-                        </View>
+                        {sub.status?.toLowerCase() === 'cancelled' ? (
+                          <View style={[styles.expiredTag, { backgroundColor: '#FEE2E2', borderColor: '#FECACA' }]}>
+                            <Text style={[styles.expiredTagText, { color: '#DC2626' }]}>CANCELLED</Text>
+                          </View>
+                        ) : (
+                          <View style={styles.expiredTag}>
+                            <Text style={styles.expiredTagText}>EXPIRED</Text>
+                          </View>
+                        )}
                       </View>
                       <Text style={[styles.activeDate, { color: theme.textMuted }]}>
-                        Expired on {dayjs(sub.end_date).format('MMM DD, YYYY')}
+                        {sub.status?.toLowerCase() === 'cancelled'
+                          ? `Cancelled on ${sub.cancelled_at ? dayjs(sub.cancelled_at).format('MMM DD, YYYY') : 'record'}${sub.cancellation_reason ? ` • ${sub.cancellation_reason}` : ''}`
+                          : `Expired on ${dayjs(sub.end_date).format('MMM DD, YYYY')}`}
                       </Text>
                     </View>
 
@@ -1151,6 +1226,54 @@ export default function SubscriptionScreen({ navigation, route }: any) {
                     </Text>
                   </View>
                 ) : null}
+
+                {/* Cancel Plan Section (Admin-Managed Cancellation) */}
+                <Text style={[styles.actionSectionHeader, { color: theme.textPrimary, marginTop: 24 }]}>
+                  Need to Cancel Plan?
+                </Text>
+
+                <View
+                  style={[
+                    styles.cancelPlanCard,
+                    { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
+                  ]}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
+                    <Text style={{ fontSize: 20 }}>⚠️</Text>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.cancelPlanTitle, { color: theme.textPrimary }]}>
+                        Plan Cancellation by Kitchen Admin
+                      </Text>
+                      <Text style={[styles.cancelPlanDesc, { color: theme.textSecondary }]}>
+                        Active plans are cancelled directly by AFoodoo Kitchen to ensure remaining meal calculations or refunds (via UPI or Wallet) are reconciled accurately.
+                      </Text>
+                    </View>
+                  </View>
+
+                  {managingSub.cancellation_requested ? (
+                    <View style={styles.cancelRequestedBanner}>
+                      <Text style={styles.cancelRequestedText}>
+                        ⏳ Cancellation request submitted. Our kitchen team will contact you shortly.
+                      </Text>
+                    </View>
+                  ) : (
+                    <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                      <TouchableOpacity
+                        style={styles.requestCancelBtn}
+                        onPress={() => handleRequestCancellation(managingSub)}
+                      >
+                        <Text style={styles.requestCancelBtnText}>Request Cancellation</Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={styles.whatsappAdminBtn}
+                        onPress={() => handleContactAdminWhatsApp(managingSub)}
+                      >
+                        <Text style={styles.whatsappAdminBtnText}>💬 WhatsApp Admin</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                </View>
               </View>
             </ScrollView>
           </SafeAreaView>
@@ -2030,4 +2153,66 @@ const styles = StyleSheet.create({
   dishOptionName: { fontSize: 13, fontWeight: '800' },
   dishOptionDesc: { fontSize: 11, marginTop: 2 },
   dishOptionPrice: { fontSize: 14, fontWeight: '900' },
+
+  // Cancel Plan Card
+  cancelPlanCard: {
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1.2,
+    marginTop: 8,
+    marginBottom: 20,
+  },
+  cancelPlanTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  cancelPlanDesc: {
+    fontSize: 11,
+    lineHeight: 16,
+  },
+  cancelRequestedBanner: {
+    backgroundColor: '#FEF3C7',
+    borderColor: '#FDE68A',
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 10,
+    marginTop: 12,
+  },
+  cancelRequestedText: {
+    fontSize: 11,
+    color: '#92400E',
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  requestCancelBtn: {
+    flex: 1,
+    backgroundColor: '#FEE2E2',
+    borderColor: '#FECACA',
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  requestCancelBtnText: {
+    fontSize: 12,
+    color: '#DC2626',
+    fontWeight: '800',
+  },
+  whatsappAdminBtn: {
+    flex: 1,
+    backgroundColor: '#DCFCE7',
+    borderColor: '#BBF7D0',
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  whatsappAdminBtnText: {
+    fontSize: 12,
+    color: '#15803D',
+    fontWeight: '800',
+  },
 });
