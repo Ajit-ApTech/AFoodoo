@@ -13,7 +13,6 @@ import {
   StatusBar,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { firestore } from '../firebaseConfig';
 import { useAppStore } from '../store/appStore';
 import { useTheme } from '../theme/ThemeContext';
 import { syncUserWithFirestore } from '../api/firestoreApi';
@@ -32,19 +31,17 @@ export default function AuthScreen({ navigation }: any) {
   const [countryCode, setCountryCode] = useState('91');
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
-  const [showCountryPicker, setShowCountryPicker] = useState(false);
-  const [code, setCode] = useState('');
   const [address, setAddress] = useState('');
-  const [verificationId, setVerificationId] = useState<string | null>(null);
+  const [showCountryPicker, setShowCountryPicker] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [syncStatus, setSyncStatus] = useState<string>('');
   const setUser = useAppStore(state => state.setUser);
 
   const cleanPhoneDigits = phone.replace(/\D/g, '');
   const fullPhone = `+${countryCode}${cleanPhoneDigits}`;
   const selectedCountry = COUNTRY_CODES.find(c => c.value === countryCode) || COUNTRY_CODES[0];
 
-  const sendOtp = () => {
+  const handleLogin = async () => {
+    // Validate phone number
     if (countryCode === '91') {
       if (cleanPhoneDigits.length !== 10 || !/^[6-9]\d{9}$/.test(cleanPhoneDigits)) {
         Alert.alert(
@@ -63,77 +60,59 @@ export default function AuthScreen({ navigation }: any) {
       }
     }
 
-    const dynamicCode = Math.floor(100000 + Math.random() * 900000).toString();
-    setCode(dynamicCode);
-    setVerificationId(`verif_${Date.now()}`);
-    Alert.alert(
-      'OTP Sent 📲',
-      `Phone: ${fullPhone}\n\nYour 6-Digit OTP: ${dynamicCode}\n\n(Auto-filled for quick login)`
-    );
-  };
-
-  const confirmOtp = async () => {
-    if (!code || code.trim().length < 6) {
-      Alert.alert('Required', 'Please enter the 6-digit OTP code.');
-      return;
-    }
-
-    if (countryCode === '91') {
-      if (cleanPhoneDigits.length !== 10 || !/^[6-9]\d{9}$/.test(cleanPhoneDigits)) {
-        Alert.alert('Invalid Mobile Number', 'Please enter a valid 10-digit mobile number.');
-        return;
-      }
-    } else if (cleanPhoneDigits.length < 10) {
-      Alert.alert('Invalid Mobile Number', 'Please enter a valid mobile number with at least 10 digits.');
-      return;
-    }
-
     setLoading(true);
     const userDocId = `usr_${countryCode}${cleanPhoneDigits}`;
 
-    // Sync or create user in Cloud Firestore
-    const firestoreUserData: any = await syncUserWithFirestore(fullPhone, name.trim());
-    if (firestoreUserData?.is_blocked) {
+    try {
+      // Sync or create user in Cloud Firestore
+      const firestoreUserData: any = await syncUserWithFirestore(fullPhone, name.trim());
+
+      if (firestoreUserData?.is_blocked) {
+        setLoading(false);
+        Alert.alert(
+          'Account Suspended 🔒',
+          'Your account has been suspended by administration. Please contact support.'
+        );
+        return;
+      }
+
+      const userAddresses =
+        firestoreUserData?.addresses && firestoreUserData.addresses.length > 0
+          ? firestoreUserData.addresses
+          : address.trim()
+          ? [
+              {
+                id: 'addr_1',
+                label: 'Home',
+                line1: address.trim(),
+                city: '',
+                state: '',
+                zip: '',
+                latitude: 0,
+                longitude: 0,
+              },
+            ]
+          : [];
+
+      const authenticatedUser = {
+        id: firestoreUserData?.id || userDocId,
+        name: name.trim() || firestoreUserData?.name || `Customer (${fullPhone})`,
+        phone: fullPhone,
+        wallet_balance: firestoreUserData?.wallet_balance ?? 0,
+        is_blocked: firestoreUserData?.is_blocked || false,
+        addresses: userAddresses,
+        default_address_id: userAddresses[0]?.id || 'addr_1',
+        subscription_status: 'none',
+        loyalty_points: firestoreUserData?.loyalty_points ?? 0,
+      };
+
+      setUser(authenticatedUser as any);
+      navigation.replace('Home');
+    } catch (error: any) {
+      Alert.alert('Login Failed', 'Something went wrong. Please check your connection and try again.');
+    } finally {
       setLoading(false);
-      Alert.alert(
-        'Account Suspended 🔒',
-        'Your user account has been suspended by administration. Please contact support.'
-      );
-      return;
     }
-
-    const userAddresses = firestoreUserData?.addresses && firestoreUserData.addresses.length > 0
-      ? firestoreUserData.addresses
-      : address.trim()
-        ? [
-            {
-              id: 'addr_1',
-              label: 'Home',
-              line1: address.trim(),
-              city: '',
-              state: '',
-              zip: '',
-              latitude: 0,
-              longitude: 0,
-            },
-          ]
-        : [];
-
-    const authenticatedUser = {
-      id: firestoreUserData?.id || userDocId,
-      name: name.trim() || firestoreUserData?.name || `Customer (${fullPhone})`,
-      phone: fullPhone,
-      wallet_balance: firestoreUserData?.wallet_balance ?? 0,
-      is_blocked: firestoreUserData?.is_blocked || false,
-      addresses: userAddresses,
-      default_address_id: userAddresses[0]?.id || 'addr_1',
-      subscription_status: 'none',
-      loyalty_points: firestoreUserData?.loyalty_points ?? 0,
-    };
-
-    setUser(authenticatedUser as any);
-    setLoading(false);
-    navigation.replace('Home');
   };
 
   const insets = useSafeAreaInsets();
@@ -247,33 +226,6 @@ export default function AuthScreen({ navigation }: any) {
             )}
           </View>
 
-          {/* OTP Input */}
-          {verificationId ? (
-            <View style={styles.inputGroup}>
-              <Text style={[styles.inputLabel, { color: theme.textPrimary }]}>6-Digit OTP Code</Text>
-              <TextInput
-                placeholder="Enter OTP"
-                placeholderTextColor={theme.textMuted}
-                keyboardType="numeric"
-                style={[
-                  styles.input,
-                  {
-                    backgroundColor: theme.inputBg,
-                    borderColor: theme.inputBorder,
-                    color: theme.inputText,
-                    letterSpacing: 6,
-                    textAlign: 'center',
-                    fontSize: 20,
-                    fontWeight: '700',
-                  },
-                ]}
-                value={code}
-                onChangeText={setCode}
-                maxLength={6}
-              />
-            </View>
-          ) : null}
-
           {/* Delivery Address */}
           <View style={styles.inputGroup}>
             <Text style={[styles.inputLabel, { color: theme.textPrimary }]}>Delivery Address 📍</Text>
@@ -295,31 +247,21 @@ export default function AuthScreen({ navigation }: any) {
 
           <TouchableOpacity
             style={[styles.primaryButton, { backgroundColor: theme.primary }]}
-            onPress={verificationId ? confirmOtp : sendOtp}
+            onPress={handleLogin}
             disabled={loading}
           >
             {loading ? (
               <ActivityIndicator color="#FFF" />
             ) : (
               <Text style={[styles.primaryButtonText, { color: theme.buttonText }]}>
-                {verificationId ? 'Verify OTP & Sign In ✓' : 'Send OTP Code →'}
+                Continue →
               </Text>
             )}
           </TouchableOpacity>
 
-          {verificationId && (
-            <TouchableOpacity
-              style={styles.resendRow}
-              onPress={() => {
-                setVerificationId(null);
-                setCode('');
-              }}
-            >
-              <Text style={[styles.resendText, { color: theme.textSecondary }]}>
-                ← Change number or resend OTP
-              </Text>
-            </TouchableOpacity>
-          )}
+          <Text style={[styles.loginNote, { color: theme.textMuted }]}>
+            By continuing, you agree to our Terms of Service & Privacy Policy.
+          </Text>
         </View>
 
         {/* Slot Window Info Footer */}
@@ -443,8 +385,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   primaryButtonText: { fontSize: 16, fontWeight: '700' },
-  resendRow: { alignItems: 'center', marginTop: 12 },
-  resendText: { fontSize: 13 },
+  loginNote: { fontSize: 11, textAlign: 'center', marginTop: 12, lineHeight: 16 },
   windowInfoCard: {
     borderRadius: 16,
     padding: 16,
