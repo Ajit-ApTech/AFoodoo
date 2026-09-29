@@ -32,7 +32,7 @@ export default function UsersManagementPage() {
               id: docSnap.id,
               name: data.name || `Customer (${data.phone || docSnap.id})`,
               phone: data.phone || docSnap.id,
-              wallet_balance: data.wallet_balance ?? 500,
+              wallet_balance: data.wallet_balance ?? 0,
               subscription_ids: data.subscription_ids || [],
               active_subscription: data.active_subscription || '',
               role: data.role || 'customer',

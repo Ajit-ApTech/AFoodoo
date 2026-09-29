@@ -48,16 +48,16 @@ export default function BookingScreen({ route, navigation }: any) {
 
   // Delivery form state — pre-filled from user's last saved address
   const savedAddr = user?.addresses && user.addresses.length > 0 ? user.addresses[0] : null;
-  const [receiverName, setReceiverName] = useState(savedAddr?.receiver_name || user?.name || 'Ajit p');
-  const [receiverPhone, setReceiverPhone] = useState(savedAddr?.receiver_phone || user?.phone || '+917491009852');
-  const [addressLine1, setAddressLine1] = useState(savedAddr?.line1 || 'M8W2+7RW, North Chotanagpur Division, Potanga');
-  const [landmark, setLandmark] = useState(savedAddr?.landmark || 'Near birsa workshop');
-  const [city, setCity] = useState(savedAddr?.city || 'Potanga');
-  const [pincode, setPincode] = useState(savedAddr?.zip || '825311');
+  const [receiverName, setReceiverName] = useState(savedAddr?.receiver_name || user?.name || '');
+  const [receiverPhone, setReceiverPhone] = useState(savedAddr?.receiver_phone || user?.phone || '');
+  const [addressLine1, setAddressLine1] = useState(savedAddr?.line1 || (user as any)?.address || '');
+  const [landmark, setLandmark] = useState(savedAddr?.landmark || '');
+  const [city, setCity] = useState(savedAddr?.city || '');
+  const [pincode, setPincode] = useState(savedAddr?.zip || '');
   const [detectedLat, setDetectedLat] = useState<number | null>(savedAddr?.latitude ?? null);
   const [detectedLng, setDetectedLng] = useState<number | null>(savedAddr?.longitude ?? null);
   const [locating, setLocating] = useState(false);
-  const [isEditingAddress, setIsEditingAddress] = useState(false);
+  const [isEditingAddress, setIsEditingAddress] = useState(!savedAddr?.line1);
 
   // Kitchen location & delivery radius (synced from Cloud Firestore settings/delivery_config)
   const [kitchenLat, setKitchenLat] = useState<number | null>(null);
@@ -271,7 +271,7 @@ export default function BookingScreen({ route, navigation }: any) {
   const finalPlatformFee = subtotal > 0 ? platformFee : 0;
   const totalAmount = Math.max(0, subtotal + finalDeliveryFee + finalPlatformFee - couponDiscount);
 
-  const walletBalance = user?.wallet_balance ?? 10204;
+  const walletBalance = user?.wallet_balance ?? 0;
   const isWalletSufficient = walletBalance >= totalAmount;
 
   const handleApplyCoupon = async () => {
@@ -660,7 +660,8 @@ export default function BookingScreen({ route, navigation }: any) {
     }
 
     const slotId = activeSlot?.id || 'slot_lunch_special';
-    const userId = user?.id || 'demo-user-123';
+    const cleanUserPhone = (user?.phone || receiverPhone || '').replace(/\D/g, '');
+    const userId = user?.id || (cleanUserPhone ? `usr_${cleanUserPhone}` : 'customer_user');
     const otpCode = Math.floor(1000 + Math.random() * 9000).toString();
 
     const deliveryAddress = {
@@ -1052,7 +1053,7 @@ export default function BookingScreen({ route, navigation }: any) {
                 style={inputStyle}
                 value={receiverPhone}
                 onChangeText={setReceiverPhone}
-                placeholder="+91..."
+                placeholder="10-digit mobile number"
                 keyboardType="phone-pad"
                 placeholderTextColor={theme.textMuted}
               />
@@ -1095,7 +1096,7 @@ export default function BookingScreen({ route, navigation }: any) {
                 style={inputStyle}
                 value={landmark}
                 onChangeText={setLandmark}
-                placeholder="Near landmark..."
+                placeholder="Landmark (e.g. Near Market, School)"
                 placeholderTextColor={theme.textMuted}
               />
             </View>

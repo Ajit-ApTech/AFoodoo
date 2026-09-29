@@ -71,8 +71,8 @@ function formatDateTime(isoString?: string): string {
 }
 
 export default function PushBroadcasterPage() {
-  const [title, setTitle] = useState('🍱 Special Dinner Menu Tonight!');
-  const [body, setBody] = useState('Enjoy 10% off Paneer Butter Masala tiffin meal! Order before 7 PM cutoff.');
+  const [title, setTitle] = useState('');
+  const [body, setBody] = useState('');
   const [segment, setSegment] = useState('all_users');
   const [loading, setLoading] = useState(false);
   const [sentSuccess, setSentSuccess] = useState(false);

@@ -700,7 +700,7 @@ export default function ProfileScreen({ navigation }: any) {
                 style={inputStyle}
                 value={receiverPhone}
                 onChangeText={setReceiverPhone}
-                placeholder="+91 98765 43210"
+                placeholder="10-digit mobile number"
                 placeholderTextColor={theme.textMuted}
                 keyboardType="phone-pad"
               />
@@ -710,7 +710,7 @@ export default function ProfileScreen({ navigation }: any) {
                 style={inputStyle}
                 value={line1}
                 onChangeText={setLine1}
-                placeholder="Flat 402, Green Park Residency, Sector 15"
+                placeholder="House / Flat No., Building, Street"
                 placeholderTextColor={theme.textMuted}
                 multiline
               />
@@ -720,7 +720,7 @@ export default function ProfileScreen({ navigation }: any) {
                 style={inputStyle}
                 value={landmark}
                 onChangeText={setLandmark}
-                placeholder="Near D-Mart"
+                placeholder="e.g. Near Market, School, Gate No. 2"
                 placeholderTextColor={theme.textMuted}
               />
 
@@ -731,7 +731,7 @@ export default function ProfileScreen({ navigation }: any) {
                     style={inputStyle}
                     value={city}
                     onChangeText={setCity}
-                    placeholder="Mumbai"
+                    placeholder="City / Area"
                     placeholderTextColor={theme.textMuted}
                   />
                 </View>
@@ -741,7 +741,7 @@ export default function ProfileScreen({ navigation }: any) {
                     style={inputStyle}
                     value={zip}
                     onChangeText={setZip}
-                    placeholder="400001"
+                    placeholder="6-digit PIN code"
                     placeholderTextColor={theme.textMuted}
                     keyboardType="numeric"
                     maxLength={6}

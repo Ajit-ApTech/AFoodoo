@@ -482,20 +482,20 @@ export default function HomeScreen({ navigation }: any) {
         }
 
         const savedAddr: any = (user?.addresses && user.addresses.length > 0) ? user.addresses[0] : null;
+        const deliveryLat = savedAddr?.latitude ?? null;
+        const deliveryLng = savedAddr?.longitude ?? null;
+        const mapsLink = deliveryLat && deliveryLng ? `https://www.google.com/maps/search/?api=1&query=${deliveryLat},${deliveryLng}` : null;
         const deliveryAddressObj = {
           label: savedAddr?.label || 'Home',
           receiver_name: savedAddr?.receiver_name || sub.user_name || user.name || 'Customer',
           receiver_phone: savedAddr?.receiver_phone || cleanPhone,
-          line1: savedAddr?.line1 || (user as any).address || 'M8W2+7RW, North Chotanagpur Division, Potanga',
-          landmark: savedAddr?.landmark || 'Near birsa workshop',
-          city: savedAddr?.city || 'Potanga',
-          zip: savedAddr?.zip || '825311',
-          latitude: savedAddr?.latitude ?? 23.660920933979938,
-          longitude: savedAddr?.longitude ?? 85.306910625171,
+          line1: savedAddr?.line1 || (user as any).address || '',
+          landmark: savedAddr?.landmark || '',
+          city: savedAddr?.city || '',
+          zip: savedAddr?.zip || '',
+          latitude: deliveryLat,
+          longitude: deliveryLng,
         };
-        const deliveryLat = savedAddr?.latitude ?? 23.660920933979938;
-        const deliveryLng = savedAddr?.longitude ?? 85.306910625171;
-        const mapsLink = `https://www.google.com/maps/search/?api=1&query=${deliveryLat},${deliveryLng}`;
         const otpCode = Math.floor(1000 + Math.random() * 9000).toString();
 
         await addDoc(collection(firestore, 'orders'), {
@@ -614,7 +614,7 @@ export default function HomeScreen({ navigation }: any) {
           <View style={styles.headerCenterCol}>
             <Text style={[styles.greetingSmallText, { color: theme.textSecondary }]}>Welcome Back 👋</Text>
             <Text style={[styles.userNameHeading, { color: theme.textPrimary }]} numberOfLines={1}>
-              {user?.name || 'Ajit'}
+              {user?.name || 'Foodie'}
             </Text>
           </View>
 
@@ -672,7 +672,7 @@ export default function HomeScreen({ navigation }: any) {
           <Text style={[styles.addressText, { color: theme.textSecondary }]} numberOfLines={1}>
             {user?.addresses?.[0]?.line1
               ? `${user.addresses[0].line1}${user.addresses[0].city ? `, ${user.addresses[0].city}` : ''}`
-              : 'M8W2+7RW, North Chotanagpur Division, Potanga'}
+              : 'Tap to set delivery location'}
           </Text>
           <Text style={[styles.addressCaret, { color: theme.textMuted }]}>⌵</Text>
         </TouchableOpacity>

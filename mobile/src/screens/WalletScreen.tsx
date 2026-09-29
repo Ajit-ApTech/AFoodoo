@@ -42,7 +42,7 @@ export default function WalletScreen({ navigation }: any) {
   const [customQrUrl, setCustomQrUrl] = useState('');
   const [customAmountText, setCustomAmountText] = useState('');
 
-  const currentBalance = user?.wallet_balance ?? 500;
+  const currentBalance = user?.wallet_balance ?? 0;
 
   // Real-time Cloud Firestore subscription for user's profile and live wallet balance
   useEffect(() => {

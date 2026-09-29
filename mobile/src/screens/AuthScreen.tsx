@@ -123,12 +123,12 @@ export default function AuthScreen({ navigation }: any) {
       id: firestoreUserData?.id || userDocId,
       name: name.trim() || firestoreUserData?.name || `Customer (${fullPhone})`,
       phone: fullPhone,
-      wallet_balance: firestoreUserData?.wallet_balance ?? 500,
+      wallet_balance: firestoreUserData?.wallet_balance ?? 0,
       is_blocked: firestoreUserData?.is_blocked || false,
       addresses: userAddresses,
       default_address_id: userAddresses[0]?.id || 'addr_1',
       subscription_status: 'none',
-      loyalty_points: 120,
+      loyalty_points: firestoreUserData?.loyalty_points ?? 0,
     };
 
     setUser(authenticatedUser as any);
@@ -167,7 +167,7 @@ export default function AuthScreen({ navigation }: any) {
           <View style={styles.inputGroup}>
             <Text style={[styles.inputLabel, { color: theme.textPrimary }]}>Full Name</Text>
             <TextInput
-              placeholder="e.g. Rahul Sharma"
+              placeholder="Enter your name"
               placeholderTextColor={theme.textMuted}
               style={[
                 styles.input,
@@ -199,7 +199,7 @@ export default function AuthScreen({ navigation }: any) {
 
               {/* Phone Number Input */}
               <TextInput
-                placeholder="98765 43210"
+                placeholder="Enter 10-digit number"
                 placeholderTextColor={theme.textMuted}
                 keyboardType="number-pad"
                 style={[

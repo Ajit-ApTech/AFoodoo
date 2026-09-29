@@ -16,7 +16,7 @@ const DEFAULT_CONFIG: DeliveryConfig = {
   kitchen_maps_link: '',
   max_delivery_radius_km: 25,
   rider_whatsapp: '',
-  support_phone: '+91 98765 43210',
+  support_phone: '',
   support_email: 'support@afoodoo.com',
   support_hours: '8:00 AM - 10:00 PM Daily',
   upi_id: 'afoodoo@upi',
@@ -631,7 +631,7 @@ export default function DeliverySettingsPage() {
             <label className={labelClass}>Support Phone / WhatsApp Number</label>
             <input
               className={inputClass}
-              placeholder="e.g. +91 98765 43210"
+              placeholder="e.g. +91 74910 09852"
               value={config.support_phone || ''}
               onChange={e => setConfig(prev => ({ ...prev, support_phone: e.target.value }))}
             />
@@ -692,7 +692,7 @@ export default function DeliverySettingsPage() {
             <label className={labelClass}>Kitchen UPI VPA ID (Payee Address)</label>
             <input
               className={inputClass}
-              placeholder="e.g. afoodoo@upi or 9876543210@paytm"
+              placeholder="e.g. afoodoo@upi or merchant@okaxis"
               value={config.upi_id || ''}
               onChange={e => setConfig(prev => ({ ...prev, upi_id: e.target.value }))}
             />

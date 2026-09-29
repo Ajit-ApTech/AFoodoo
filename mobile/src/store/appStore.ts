@@ -167,7 +167,7 @@ export const useAppStore = create<AppState>()(
         deductWalletBalance: async (amount, title) => {
           const currentUser = get().user;
           if (!currentUser) return;
-          const newBalance = Math.max(0, (currentUser.wallet_balance ?? 500) - amount);
+          const newBalance = Math.max(0, (currentUser.wallet_balance ?? 0) - amount);
           set({ user: { ...currentUser, wallet_balance: newBalance } });
 
           try {

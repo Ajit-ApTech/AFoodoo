@@ -110,7 +110,7 @@ export async function syncUserWithFirestore(phone: string, defaultName?: string)
       const newUser = {
         name: defaultName || `Customer (${cleanPhone})`,
         phone: cleanPhone,
-        wallet_balance: 500,
+        wallet_balance: 0,
         subscription_ids: [],
         role: 'customer',
         is_blocked: false,
