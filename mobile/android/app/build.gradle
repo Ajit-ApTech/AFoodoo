@@ -89,10 +89,10 @@ android {
 
     namespace 'com.anonymous.afoodoo'
     defaultConfig {
-        applicationId 'com.anonymous.afoodoo'
+        applicationId 'com.afoodoo.app'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 3
+        versionCode 7
         versionName "1.0.0"
     }
     signingConfigs {
