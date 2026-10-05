@@ -11,6 +11,7 @@ import {
   addDoc,
   deleteDoc,
   getDoc,
+  getDocs,
 } from 'firebase/firestore';
 import {
   Repeat,
@@ -514,6 +515,219 @@ export default function SubscriptionsManagementPage() {
     }
   };
 
+  // Automated Slot Auto-Booking Trigger: executes for any meal slot currently OPEN for booking
+  const [isAutoBooking, setIsAutoBooking] = useState(false);
+
+  const handleTriggerAutoBooking = async () => {
+    setIsAutoBooking(true);
+    try {
+      const now = new Date();
+      const nowMs = now.getTime();
+      const todayStr = now.toISOString().slice(0, 10);
+
+      const parseTimeToMs = (timeVal: string): number | null => {
+        if (!timeVal) return null;
+        const match = timeVal.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+        if (match) {
+          let hours = parseInt(match[1], 10);
+          const minutes = parseInt(match[2], 10);
+          const ampm = match[3].toUpperCase();
+          if (ampm === 'PM' && hours < 12) hours += 12;
+          if (ampm === 'AM' && hours === 12) hours = 0;
+          const d = new Date(now);
+          d.setHours(hours, minutes, 0, 0);
+          return d.getTime();
+        }
+        const d = new Date(timeVal);
+        return isNaN(d.getTime()) ? null : d.getTime();
+      };
+
+      const slotsSnap = await getDocs(collection(db, 'meal_slots'));
+      const allSlots: any[] = slotsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+      const openSlots = allSlots.filter(s => {
+        if (s.active === false) return false;
+        const openMs = parseTimeToMs(s.booking_open_time || '05:00 AM');
+        const cutoffMs = parseTimeToMs(s.booking_cutoff_time || '11:59 AM');
+        if (!openMs || !cutoffMs) return false;
+        return nowMs >= openMs && nowMs < cutoffMs;
+      });
+
+      if (openSlots.length === 0) {
+        alert(
+          'ℹ️ No meal slots are currently open for booking.\n\nAuto-booking only executes during a slot\'s active booking window (e.g. Lunch 07:00 AM – 11:59 AM, Dinner 01:00 PM – 07:30 PM).'
+        );
+        setIsAutoBooking(false);
+        return;
+      }
+
+      const openSlotNames = openSlots.map(s => s.name || s.id).join(', ');
+      let bookedCount = 0;
+
+      const activeSubs = subscriptions.filter(s => {
+        const isExp = s.status === 'expired' || s.status === 'cancelled' || (s.meals_remaining ?? 0) <= 0;
+        return !isExp && !s.is_paused && s.status !== 'PAUSED';
+      });
+
+      for (const sub of activeSubs) {
+        if (sub.paused_dates?.includes(todayStr)) continue;
+
+        for (const slot of openSlots) {
+          const planStr = `${sub.plan_type || ''} ${sub.plan_title || ''}`.toLowerCase();
+          const slotStr = `${slot.name || ''}`.toLowerCase();
+
+          let matches = false;
+          if (planStr.includes('combo') || planStr.includes('lunch + dinner')) {
+            matches = slotStr.includes('lunch') || slotStr.includes('dinner');
+          } else if (planStr.includes('lunch')) {
+            matches = slotStr.includes('lunch');
+          } else if (planStr.includes('dinner')) {
+            matches = slotStr.includes('dinner');
+          } else {
+            matches = true;
+          }
+
+          if (!matches) continue;
+
+          const isCombo = planStr.includes('combo');
+          const lastSlots: any = (sub as any).last_auto_booked_slots || {};
+          const bookedForSlotToday = lastSlots[slot.id] === todayStr;
+          const alreadyBookedSingle = !isCombo && sub.last_auto_booked_date === todayStr;
+
+          if (bookedForSlotToday || alreadyBookedSingle) continue;
+
+          const orderCode = `AF-${Math.floor(1000 + Math.random() * 9000)}`;
+          const mealPrice = 150;
+          const dishName = `${slot.name || 'Tiffin'} Daily Meal`;
+          const userId = sub.user_id;
+
+          let userPushToken: string | null = null;
+          let savedAddress: any = (sub as any).delivery_address || null;
+          if (userId) {
+            try {
+              const uSnap = await getDoc(doc(db, 'users', userId));
+              if (uSnap.exists()) {
+                const uData = uSnap.data();
+                userPushToken = uData?.expo_push_token || uData?.fcm_token || null;
+                if (!savedAddress && Array.isArray(uData?.addresses) && uData.addresses.length > 0) {
+                  savedAddress = uData.addresses[0];
+                }
+              }
+            } catch (uErr) {}
+          }
+
+          // Skip if no real delivery address is saved on customer account!
+          if (!savedAddress || !savedAddress.line1 || savedAddress.line1.trim() === '') {
+            continue;
+          }
+
+          if (userId && mealPrice > 0) {
+            try {
+              await updateDoc(doc(db, 'users', userId), {
+                wallet_balance: increment(-mealPrice),
+              });
+              await addDoc(collection(db, 'wallet_transactions'), {
+                user_id: userId,
+                user_phone: sub.user_phone || '',
+                title: `Daily Meal: ${dishName}`,
+                description: `Auto-booked for ${slot.name} (${orderCode})`,
+                amount: mealPrice,
+                type: 'debit',
+                timestamp: new Date().toISOString(),
+                created_at: new Date().toISOString(),
+              });
+            } catch (wErr) {}
+          }
+
+          const deliveryLat = savedAddress.latitude ?? null;
+          const deliveryLng = savedAddress.longitude ?? null;
+          const mapsLink =
+            deliveryLat && deliveryLng
+              ? `https://www.google.com/maps/search/?api=1&query=${deliveryLat},${deliveryLng}`
+              : null;
+
+          const ordRef = await addDoc(collection(db, 'orders'), {
+            order_code: orderCode,
+            user_id: userId || '',
+            user_name: sub.user_name || 'Customer',
+            customer_name: sub.user_name || 'Customer',
+            user_phone: sub.user_phone || '',
+            customer_phone: sub.user_phone || '',
+            delivery_name: savedAddress.receiver_name || sub.user_name || 'Customer',
+            delivery_phone: savedAddress.receiver_phone || sub.user_phone || '',
+            delivery_address: {
+              label: savedAddress.label || 'Home',
+              receiver_name: savedAddress.receiver_name || sub.user_name || 'Customer',
+              receiver_phone: savedAddress.receiver_phone || sub.user_phone || '',
+              line1: savedAddress.line1.trim(),
+              landmark: savedAddress.landmark || '',
+              city: savedAddress.city || '',
+              zip: savedAddress.zip || '',
+              latitude: deliveryLat,
+              longitude: deliveryLng,
+            },
+            delivery_lat: deliveryLat,
+            delivery_lng: deliveryLng,
+            delivery_distance_km: savedAddress.distance_km ?? null,
+            maps_link: mapsLink,
+            otp_code: Math.floor(1000 + Math.random() * 9000).toString(),
+            menu_title: dishName,
+            items: [
+              {
+                id: 'dish_sub_auto',
+                title: dishName,
+                name: dishName,
+                price: mealPrice,
+                quantity: 1,
+              },
+            ],
+            total_amount: mealPrice,
+            subtotal: mealPrice,
+            delivery_fee: 0,
+            platform_fee: 0,
+            discount: 0,
+            payment_method: 'wallet',
+            payment_status: 'paid',
+            status: 'booked',
+            order_type: 'subscription_auto',
+            subscription_id: sub.id,
+            booking_date: todayStr,
+            slot_name: slot.name || 'Daily Meal',
+            created_at: new Date().toISOString(),
+            timestamp: new Date().toISOString(),
+          });
+
+          const updatedBookedSlots = { ...lastSlots, [slot.id]: todayStr };
+          await updateDoc(doc(db, 'subscriptions', sub.id), {
+            meals_remaining: increment(-1),
+            last_auto_booked_date: todayStr,
+            last_auto_booked_slots: updatedBookedSlots,
+            updated_at: new Date().toISOString(),
+          });
+
+          if (userPushToken) {
+            sendExpoPushNotification(
+              [userPushToken],
+              '🍱 Daily Tiffin Auto-Booked!',
+              `Your ${slot.name || 'tiffin'} meal (${dishName}) for today has been booked and scheduled with the kitchen!`,
+              { orderId: ordRef.id, type: 'ORDER_UPDATE' }
+            );
+          }
+
+          bookedCount++;
+        }
+      }
+
+      alert(
+        `✅ Slot Auto-Booking Complete!\n\nOpen slot(s): ${openSlotNames}\nSuccessfully auto-booked: ${bookedCount} order(s).`
+      );
+    } catch (err: any) {
+      alert(`Error during auto-booking: ${err.message}`);
+    } finally {
+      setIsAutoBooking(false);
+    }
+  };
+
   return (
     <div className="space-y-8">
       {/* Top Header */}
@@ -531,6 +745,16 @@ export default function SubscriptionsManagementPage() {
         </div>
 
         <div className="flex items-center gap-3">
+          <button
+            onClick={handleTriggerAutoBooking}
+            disabled={isAutoBooking}
+            className="flex items-center gap-2 bg-orange-600 hover:bg-orange-500 text-white border border-orange-500/50 px-4 py-2.5 rounded-xl text-xs font-semibold transition shadow-md disabled:opacity-50 cursor-pointer"
+            title="Auto-book meals for all active subscriptions whose meal slot is currently open"
+          >
+            <Clock className={`h-4 w-4 ${isAutoBooking ? 'animate-spin' : ''}`} />
+            <span>{isAutoBooking ? 'Booking...' : '⚡ Auto-Book Open Slots'}</span>
+          </button>
+
           {activeTab === 'expired' && subscriptions.some(s => {
             const st = getSubStatus(s);
             return st === 'expired' || st === 'cancelled';

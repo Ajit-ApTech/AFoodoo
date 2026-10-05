@@ -89,12 +89,18 @@ export async function registerForPushNotificationsAsync(userId?: string): Promis
     if (finalStatus !== 'granted') return null;
 
     let token: string | null = null;
+    const resolvedProjectId =
+      Constants?.expoConfig?.extra?.eas?.projectId ??
+      (Constants as any)?.easConfig?.projectId ??
+      '5e4bd696-e20b-4ad5-a0f8-58d185ec1e31';
+
     try {
       const pushTokenData = await Notifications.getExpoPushTokenAsync({
-        projectId: 'fb04d89b-b5b3-4d16-a220-7e5f3a90d82c',
+        projectId: resolvedProjectId,
       });
       token = pushTokenData.data;
     } catch (e) {
+      console.log('Notice obtaining Expo Push Token:', e);
       // Fallback for native FCM device token
       try {
         const deviceToken = await Notifications.getDevicePushTokenAsync();

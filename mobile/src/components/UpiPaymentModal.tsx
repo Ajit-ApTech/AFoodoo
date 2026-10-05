@@ -10,10 +10,9 @@ import {
   ScrollView,
   ActivityIndicator,
   Alert,
-  Linking,
 } from 'react-native';
 import { useTheme } from '../theme/ThemeContext';
-import { generateUpiQrCodeUrl, generateUpiUrl } from '../utils/upi';
+import { generateUpiQrCodeUrl } from '../utils/upi';
 
 interface UpiPaymentModalProps {
   visible: boolean;
@@ -59,21 +58,6 @@ export const UpiPaymentModal: React.FC<UpiPaymentModalProps> = ({
   });
 
   const activeQrUrl = customQrUrl?.trim() || dynamicQrUrl;
-
-  const handleOpenUpiApp = () => {
-    const upiUrl = generateUpiUrl({
-      upiId: cleanUpiId,
-      merchantName: cleanMerchant,
-      amount,
-      note,
-    });
-    Linking.openURL(upiUrl).catch(() => {
-      Alert.alert(
-        'UPI App Notice 📱',
-        `Could not open UPI app directly. Please scan the QR code above or pay directly to UPI ID: ${cleanUpiId}`
-      );
-    });
-  };
 
   const handleConfirm = () => {
     const cleanUtr = utr.trim();
@@ -169,17 +153,6 @@ export const UpiPaymentModal: React.FC<UpiPaymentModalProps> = ({
                 💡 Long-press UPI ID above to copy into your UPI app
               </Text>
             </View>
-
-            {/* Optional Open UPI App Button */}
-            <TouchableOpacity
-              activeOpacity={0.8}
-              onPress={handleOpenUpiApp}
-              style={[styles.openUpiBtn, { borderColor: theme.primary }]}
-            >
-              <Text style={[styles.openUpiBtnText, { color: theme.primary }]}>
-                🚀 Try Opening in UPI App
-              </Text>
-            </TouchableOpacity>
 
             {/* Optional UTR Input */}
             <View style={styles.utrSection}>
@@ -383,17 +356,6 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     marginTop: 4,
     textAlign: 'center',
-  },
-  openUpiBtn: {
-    borderWidth: 1.5,
-    borderRadius: 12,
-    paddingVertical: 9,
-    alignItems: 'center',
-    marginBottom: 14,
-  },
-  openUpiBtnText: {
-    fontSize: 12.5,
-    fontWeight: '700',
   },
   utrSection: {
     marginBottom: 10,

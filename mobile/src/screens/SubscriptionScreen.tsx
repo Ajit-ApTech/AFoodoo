@@ -12,6 +12,8 @@ import {
   Platform,
   StatusBar,
   Linking,
+  ActivityIndicator,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppStore } from '../store/appStore';
@@ -85,8 +87,24 @@ const AVAILABLE_PLANS = [
 export default function SubscriptionScreen({ navigation, route }: any) {
   const { theme, isDark } = useTheme();
   const user = useAppStore(state => state.user);
+  const setUser = useAppStore(state => state.setUser);
   const subscriptions = useAppStore(state => state.subscriptions);
   const setSubscriptions = useAppStore(state => state.setSubscriptions);
+
+  // Delivery address confirmation/entry modal for subscription purchase
+  const [showAddressModal, setShowAddressModal] = useState(false);
+  const [confirmedDeliveryAddress, setConfirmedDeliveryAddress] = useState<any>(null);
+  const [selectedAddrId, setSelectedAddrId] = useState<string>('');
+  const [isAddingNewAddress, setIsAddingNewAddress] = useState(false);
+  const [addrReceiverName, setAddrReceiverName] = useState('');
+  const [addrPhone, setAddrPhone] = useState('');
+  const [addrLine1, setAddrLine1] = useState('');
+  const [addrLandmark, setAddrLandmark] = useState('');
+  const [addrCity, setAddrCity] = useState('');
+  const [addrZip, setAddrZip] = useState('');
+  const [addrLat, setAddrLat] = useState<number | null>(null);
+  const [addrLng, setAddrLng] = useState<number | null>(null);
+  const [locatingAddr, setLocatingAddr] = useState(false);
 
   // Top Tabs: 'active' | 'past'
   const [activeTab, setActiveTab] = useState<'active' | 'past'>('active');
@@ -382,8 +400,132 @@ export default function SubscriptionScreen({ navigation, route }: any) {
   };
 
   const handleConfirmMenuAndProceedToPay = () => {
-    // When purchasing upfront, meal upgrades are added to the UPI payment amount directly
     setShowMenuCustomizer(false);
+
+    // Initialize address form from saved addresses or user profile
+    const saved = user?.addresses && user.addresses.length > 0 ? user.addresses[0] : null;
+    if (saved && saved.line1) {
+      setSelectedAddrId(saved.id || 'saved_0');
+      setIsAddingNewAddress(false);
+    } else {
+      setIsAddingNewAddress(true);
+    }
+    setAddrReceiverName(saved?.receiver_name || user?.name || '');
+    setAddrPhone(saved?.receiver_phone || user?.phone || '');
+    setAddrLine1(saved?.line1 || '');
+    setAddrLandmark(saved?.landmark || '');
+    setAddrCity(saved?.city || '');
+    setAddrZip(saved?.zip || '');
+    setAddrLat(saved?.latitude ?? null);
+    setAddrLng(saved?.longitude ?? null);
+
+    setShowAddressModal(true);
+  };
+
+  const handleDetectAddressLocation = async () => {
+    setLocatingAddr(true);
+    try {
+      const Location = require('expo-location');
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Denied', 'Please allow location permission in device settings.');
+        setLocatingAddr(false);
+        return;
+      }
+      const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      const lat = position.coords.latitude;
+      const lng = position.coords.longitude;
+      setAddrLat(lat);
+      setAddrLng(lng);
+
+      try {
+        const geocoded = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
+        if (geocoded && geocoded.length > 0) {
+          const g = geocoded[0];
+          const parts = [g.name, g.streetNumber, g.street, g.subregion].filter(Boolean);
+          const detectedStreet = parts.length > 0 ? parts.join(', ') : '';
+          const detectedCity = g.city || g.subregion || g.district || '';
+          const detectedZip = g.postalCode || '';
+          if (detectedStreet) setAddrLine1(detectedStreet);
+          if (detectedCity) setAddrCity(detectedCity);
+          if (detectedZip) setAddrZip(detectedZip);
+        }
+      } catch (gErr) {}
+
+      Alert.alert('📍 Location Captured', 'Your GPS location was captured and address fields updated!');
+    } catch (err: any) {
+      Alert.alert('GPS Error', err?.message || 'Could not fetch current GPS location.');
+    } finally {
+      setLocatingAddr(false);
+    }
+  };
+
+  const handleConfirmDeliveryAddressAndPay = async () => {
+    let finalAddr: any = null;
+
+    if (!isAddingNewAddress && selectedAddrId && user?.addresses) {
+      const found = user.addresses.find((a: any) => a.id === selectedAddrId);
+      if (found && found.line1) {
+        finalAddr = found;
+      }
+    }
+
+    if (!finalAddr) {
+      if (!addrReceiverName.trim()) {
+        Alert.alert('Required Field', 'Please enter the delivery recipient name.');
+        return;
+      }
+      if (!addrPhone.trim()) {
+        Alert.alert('Required Field', 'Please enter a contact phone number.');
+        return;
+      }
+      if (!addrLine1.trim()) {
+        Alert.alert('Required Field', 'Please enter your street / flat / house address.');
+        return;
+      }
+      if (!addrCity.trim()) {
+        Alert.alert('Required Field', 'Please enter your city.');
+        return;
+      }
+
+      const newAddress = {
+        id: `addr_${Date.now()}`,
+        label: 'Home',
+        receiver_name: addrReceiverName.trim(),
+        receiver_phone: addrPhone.trim(),
+        line1: addrLine1.trim(),
+        landmark: addrLandmark.trim(),
+        city: addrCity.trim(),
+        state: '',
+        zip: addrZip.trim(),
+        latitude: addrLat ?? undefined,
+        longitude: addrLng ?? undefined,
+      };
+
+      const currentAddresses = user?.addresses || [];
+      const updatedAddresses = [newAddress, ...currentAddresses];
+      const cleanPhone = (user?.phone || '').trim();
+      const userDocId = user?.id || `usr_${cleanPhone.replace(/\D/g, '')}`;
+
+      try {
+        const { doc, setDoc } = require('firebase/firestore');
+        const { firestore } = require('../firebaseConfig');
+        await setDoc(
+          doc(firestore, 'users', userDocId),
+          { addresses: updatedAddresses, address: addrLine1.trim() },
+          { merge: true }
+        );
+      } catch (e) {}
+
+      if (user) {
+        setUser({ ...user, addresses: updatedAddresses });
+      }
+
+      finalAddr = newAddress;
+    }
+
+    setConfirmedDeliveryAddress(finalAddr);
+    setShowAddressModal(false);
     setShowUpiModal(true);
   };
 
@@ -422,6 +564,7 @@ export default function SubscriptionScreen({ navigation, route }: any) {
           daily_menu: finalizedMenu,
           base_price: selectedPlan.price,
           meal_upgrades_total: upfrontUpgradesTotal,
+          delivery_address: confirmedDeliveryAddress || (user?.addresses?.[0] ?? null),
         },
       });
 
@@ -1719,6 +1862,316 @@ export default function SubscriptionScreen({ navigation, route }: any) {
           </SafeAreaView>
         </Modal>
       ) : null}
+
+      {/* Step 2.5: Mandatory Delivery Address Confirmation / Selection Modal */}
+      <Modal
+        visible={showAddressModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowAddressModal(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'flex-end' }}
+        >
+          <View
+            style={{
+              backgroundColor: theme.surface,
+              borderTopLeftRadius: 24,
+              borderTopRightRadius: 24,
+              maxHeight: '90%',
+              paddingBottom: 24,
+              borderTopWidth: 1,
+              borderColor: theme.surfaceBorder,
+            }}
+          >
+            {/* Header */}
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                paddingHorizontal: 20,
+                paddingVertical: 16,
+                borderBottomWidth: 1,
+                borderColor: theme.surfaceBorder,
+              }}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 17, fontWeight: '800', color: theme.textPrimary }}>
+                  Tiffin Delivery Location 📍
+                </Text>
+                <Text style={{ fontSize: 12, color: theme.textSecondary, marginTop: 2 }}>
+                  Where should your daily {selectedPlan?.title || 'meal'} tiffins be delivered?
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setShowAddressModal(false)}
+                style={{ padding: 4 }}
+              >
+                <Text style={{ fontSize: 20, color: theme.textSecondary }}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={{ paddingHorizontal: 20, paddingTop: 14 }} showsVerticalScrollIndicator={false}>
+              {/* Existing saved addresses list if user has any */}
+              {user?.addresses && user.addresses.length > 0 && !isAddingNewAddress && (
+                <View style={{ marginBottom: 16 }}>
+                  <Text style={{ fontSize: 13, fontWeight: '700', color: theme.textPrimary, marginBottom: 10 }}>
+                    Select Saved Delivery Address
+                  </Text>
+                  {user.addresses.map((addr: any, idx: number) => {
+                    const isSelected = selectedAddrId === addr.id || (!selectedAddrId && idx === 0);
+                    return (
+                      <TouchableOpacity
+                        key={addr.id || `addr_${idx}`}
+                        onPress={() => setSelectedAddrId(addr.id)}
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          padding: 12,
+                          borderRadius: 14,
+                          marginBottom: 10,
+                          backgroundColor: isSelected
+                            ? (isDark ? 'rgba(249, 115, 22, 0.15)' : '#FFF7ED')
+                            : (isDark ? 'rgba(255,255,255,0.04)' : '#F9FAFB'),
+                          borderWidth: 1.5,
+                          borderColor: isSelected ? theme.primary : theme.surfaceBorder,
+                        }}
+                      >
+                        <Text style={{ fontSize: 18, marginRight: 10 }}>
+                          {isSelected ? '🔘' : '⚪'}
+                        </Text>
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontSize: 13, fontWeight: '700', color: theme.textPrimary }}>
+                            {addr.label || 'Home'} • {addr.receiver_name} ({addr.receiver_phone})
+                          </Text>
+                          <Text style={{ fontSize: 12, color: theme.textSecondary, marginTop: 2 }}>
+                            {[addr.line1, addr.landmark, addr.city, addr.zip].filter(Boolean).join(', ')}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+
+                  <TouchableOpacity
+                    onPress={() => setIsAddingNewAddress(true)}
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      paddingVertical: 10,
+                      borderRadius: 12,
+                      borderWidth: 1,
+                      borderStyle: 'dashed',
+                      borderColor: theme.primary,
+                      marginTop: 4,
+                    }}
+                  >
+                    <Text style={{ fontSize: 13, fontWeight: '700', color: theme.primary }}>
+                      + Add New Delivery Location
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              {/* Address Form (if adding new address or no saved addresses) */}
+              {(isAddingNewAddress || !user?.addresses || user.addresses.length === 0) && (
+                <View style={{ marginBottom: 16 }}>
+                  {user?.addresses && user.addresses.length > 0 && (
+                    <TouchableOpacity
+                      onPress={() => setIsAddingNewAddress(false)}
+                      style={{ marginBottom: 12 }}
+                    >
+                      <Text style={{ fontSize: 12, fontWeight: '700', color: theme.primary }}>
+                        ‹ Back to Saved Addresses
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+
+                  {/* Detect GPS Button */}
+                  <TouchableOpacity
+                    onPress={handleDetectAddressLocation}
+                    disabled={locatingAddr}
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 8,
+                      paddingVertical: 11,
+                      borderRadius: 12,
+                      backgroundColor: isDark ? 'rgba(249, 115, 22, 0.2)' : '#FFEDD5',
+                      borderWidth: 1,
+                      borderColor: theme.primary,
+                      marginBottom: 14,
+                    }}
+                  >
+                    {locatingAddr ? (
+                      <ActivityIndicator size="small" color={theme.primary} />
+                    ) : (
+                      <Text style={{ fontSize: 16 }}>📍</Text>
+                    )}
+                    <Text style={{ fontSize: 13, fontWeight: '700', color: theme.primary }}>
+                      {locatingAddr ? 'Capturing GPS Location...' : 'Use My Current GPS Location'}
+                    </Text>
+                  </TouchableOpacity>
+
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: theme.textSecondary, marginBottom: 4 }}>
+                    Recipient Name *
+                  </Text>
+                  <TextInput
+                    value={addrReceiverName}
+                    onChangeText={setAddrReceiverName}
+                    placeholder="e.g. Rahul Sharma"
+                    placeholderTextColor={theme.textMuted}
+                    style={{
+                      height: 44,
+                      borderRadius: 10,
+                      paddingHorizontal: 12,
+                      backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#F9FAFB',
+                      borderWidth: 1,
+                      borderColor: theme.surfaceBorder,
+                      color: theme.textPrimary,
+                      fontSize: 13,
+                      marginBottom: 10,
+                    }}
+                  />
+
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: theme.textSecondary, marginBottom: 4 }}>
+                    Contact Phone Number *
+                  </Text>
+                  <TextInput
+                    value={addrPhone}
+                    onChangeText={setAddrPhone}
+                    placeholder="10-digit mobile number"
+                    placeholderTextColor={theme.textMuted}
+                    keyboardType="phone-pad"
+                    style={{
+                      height: 44,
+                      borderRadius: 10,
+                      paddingHorizontal: 12,
+                      backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#F9FAFB',
+                      borderWidth: 1,
+                      borderColor: theme.surfaceBorder,
+                      color: theme.textPrimary,
+                      fontSize: 13,
+                      marginBottom: 10,
+                    }}
+                  />
+
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: theme.textSecondary, marginBottom: 4 }}>
+                    House / Flat / Street Address *
+                  </Text>
+                  <TextInput
+                    value={addrLine1}
+                    onChangeText={setAddrLine1}
+                    placeholder="e.g. Flat 301, Sunshine Heights, Sector 14"
+                    placeholderTextColor={theme.textMuted}
+                    style={{
+                      height: 44,
+                      borderRadius: 10,
+                      paddingHorizontal: 12,
+                      backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#F9FAFB',
+                      borderWidth: 1,
+                      borderColor: theme.surfaceBorder,
+                      color: theme.textPrimary,
+                      fontSize: 13,
+                      marginBottom: 10,
+                    }}
+                  />
+
+                  <View style={{ flexDirection: 'row', gap: 10 }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 11, fontWeight: '700', color: theme.textSecondary, marginBottom: 4 }}>
+                        Landmark
+                      </Text>
+                      <TextInput
+                        value={addrLandmark}
+                        onChangeText={setAddrLandmark}
+                        placeholder="Near Metro / Park"
+                        placeholderTextColor={theme.textMuted}
+                        style={{
+                          height: 44,
+                          borderRadius: 10,
+                          paddingHorizontal: 12,
+                          backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#F9FAFB',
+                          borderWidth: 1,
+                          borderColor: theme.surfaceBorder,
+                          color: theme.textPrimary,
+                          fontSize: 13,
+                          marginBottom: 10,
+                        }}
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 11, fontWeight: '700', color: theme.textSecondary, marginBottom: 4 }}>
+                        City *
+                      </Text>
+                      <TextInput
+                        value={addrCity}
+                        onChangeText={setAddrCity}
+                        placeholder="e.g. Ranchi"
+                        placeholderTextColor={theme.textMuted}
+                        style={{
+                          height: 44,
+                          borderRadius: 10,
+                          paddingHorizontal: 12,
+                          backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#F9FAFB',
+                          borderWidth: 1,
+                          borderColor: theme.surfaceBorder,
+                          color: theme.textPrimary,
+                          fontSize: 13,
+                          marginBottom: 10,
+                        }}
+                      />
+                    </View>
+                  </View>
+
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: theme.textSecondary, marginBottom: 4 }}>
+                    Pincode
+                  </Text>
+                  <TextInput
+                    value={addrZip}
+                    onChangeText={setAddrZip}
+                    placeholder="e.g. 834001"
+                    placeholderTextColor={theme.textMuted}
+                    keyboardType="number-pad"
+                    style={{
+                      height: 44,
+                      borderRadius: 10,
+                      paddingHorizontal: 12,
+                      backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#F9FAFB',
+                      borderWidth: 1,
+                      borderColor: theme.surfaceBorder,
+                      color: theme.textPrimary,
+                      fontSize: 13,
+                      marginBottom: 14,
+                    }}
+                  />
+                </View>
+              )}
+
+              {/* Confirm Button */}
+              <TouchableOpacity
+                onPress={handleConfirmDeliveryAddressAndPay}
+                style={{
+                  height: 48,
+                  backgroundColor: theme.primary,
+                  borderRadius: 14,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  marginTop: 6,
+                  marginBottom: 24,
+                }}
+              >
+                <Text style={{ fontSize: 15, fontWeight: '800', color: '#FFF' }}>
+                  Confirm Address & Proceed to Payment ›
+                </Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
 
       {/* UPI Payment Modal */}
       <UpiPaymentModal

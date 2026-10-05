@@ -403,11 +403,18 @@ export default function WalletScreen({ navigation }: any) {
           ) : (
             realTransactions.map((tx, idx) => {
               const typeStr = (tx.type || '').toLowerCase();
+              const isDebit =
+                typeStr === 'debit' ||
+                typeStr === 'order' ||
+                typeStr === 'auto_booking' ||
+                (typeof tx.amount === 'number' && tx.amount < 0);
               const isCredit =
-                typeStr === 'credit' ||
-                typeStr === 'topup' ||
-                typeStr === 'plan_credit' ||
-                (typeof tx.amount === 'number' && tx.amount > 0);
+                !isDebit &&
+                (typeStr === 'credit' ||
+                  typeStr === 'topup' ||
+                  typeStr === 'plan_credit' ||
+                  typeStr === 'refund' ||
+                  (typeof tx.amount === 'number' && tx.amount > 0));
               const displayAmt = Math.abs(tx.amount || 0);
               const txTimeStr = tx.timestamp
                 ? new Date(tx.timestamp).toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' })

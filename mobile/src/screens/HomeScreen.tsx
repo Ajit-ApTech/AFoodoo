@@ -391,14 +391,17 @@ export default function HomeScreen({ navigation }: any) {
     } catch (e) {}
   }, [user?.phone, user?.id]);
 
-  // Automated Daily Meal Booking Engine
+  // Automated Daily Meal Booking Engine – Only books when slot booking window is OPEN and matches Lunch / Dinner / Combo plans
   useEffect(() => {
-    if (!user?.phone || !activeSlot) return;
+    if (!user?.phone) return;
     const cleanPhone = user.phone.trim();
     const userDocId = user.id || `usr_${cleanPhone.replace(/\D/g, '')}`;
     const todayStr = dayjs().format('YYYY-MM-DD');
-
     const now = dayjs();
+
+    const candidateSlots = allSlots.length > 0 ? allSlots : (activeSlot ? [activeSlot] : []);
+    if (candidateSlots.length === 0) return;
+
     const activeSubs = userSubscriptions.filter((sub: any) => {
       const isExpired =
         sub.status === 'expired' ||
@@ -410,153 +413,226 @@ export default function HomeScreen({ navigation }: any) {
 
     if (activeSubs.length === 0) return;
 
-    // Pick primary active sub
-    const sub = activeSubs[0];
-    const pausedDates = sub.paused_dates || [];
-    if (pausedDates.includes(todayStr)) {
-      // Meal delivery is paused for today by customer
-      return;
-    }
+    // Helper: Verify if a slot is currently within its active booking window (Open Time <= Now < Cutoff Time)
+    const checkIsSlotOpen = (slotItem: any): boolean => {
+      if (!slotItem || slotItem.active === false) return false;
+      const openStr = slotItem.booking_open_time || '05:00 AM';
+      const cutoffStr = slotItem.booking_cutoff_time || '11:59 AM';
 
-    if (sub.last_auto_booked_date === todayStr) {
-      // Already auto-booked for today
-      return;
-    }
+      let openDayjs = parseTimeToDayjs(openStr);
+      let cutoffDayjs = parseTimeToDayjs(cutoffStr);
 
-    // Auto-create order if within slot
-    const autoBookMeal = async () => {
+      if (openDayjs && cutoffDayjs && cutoffDayjs.isBefore(openDayjs)) {
+        if (now.isBefore(cutoffDayjs)) {
+          openDayjs = openDayjs.subtract(1, 'day');
+        } else {
+          cutoffDayjs = cutoffDayjs.add(1, 'day');
+        }
+      }
+
+      if (!openDayjs || !cutoffDayjs) return false;
+      return !now.isBefore(openDayjs) && now.isBefore(cutoffDayjs);
+    };
+
+    // Helper: Verify if subscription plan type (Lunch, Dinner, Combo) matches the given slot
+    const checkSubMatchesSlot = (sub: any, slotItem: any): boolean => {
+      const planStr = `${sub.plan_type || ''} ${sub.plan_title || ''} ${sub.plan_id || ''}`.toLowerCase();
+      const slotStr = `${slotItem.name || ''} ${slotItem.title || ''}`.toLowerCase();
+
+      // Combo plans match both Lunch and Dinner slots
+      if (planStr.includes('combo') || planStr.includes('lunch + dinner') || planStr.includes('lunch and dinner')) {
+        return slotStr.includes('lunch') || slotStr.includes('dinner');
+      }
+
+      // Lunch Weekly / Monthly plans only match Lunch slot
+      if (planStr.includes('lunch')) {
+        return slotStr.includes('lunch');
+      }
+
+      // Dinner Weekly / Monthly plans only match Dinner slot
+      if (planStr.includes('dinner')) {
+        return slotStr.includes('dinner');
+      }
+
+      // Generic fallback if plan does not specify lunch or dinner
+      return true;
+    };
+
+    const runAutoBookingForOpenSlots = async () => {
       try {
         const { collection, addDoc, doc, updateDoc, increment } = require('firebase/firestore');
         const { getNextOrderCode } = require('../api/orderCode');
         const { triggerLocalNotification } = require('../services/notificationService');
 
-        const nextCode = await getNextOrderCode();
-        let selectedDailyDish = sub.daily_menu?.[todayStr];
-        if (!selectedDailyDish) {
-          // If no pre-scheduled dish, pick real featured meal from menuItems
-          const matchingDish =
-            (menuItems || []).find((m: any) => m.slot_id === activeSlot.id || m.is_active) ||
-            menuItems?.[0];
-          if (matchingDish) {
-            selectedDailyDish = {
-              id: matchingDish.id,
-              name: matchingDish.title || matchingDish.name,
-              price: Number(matchingDish.price) || 150,
-              extraCharge: 0,
-            };
-          } else {
-            selectedDailyDish = {
-              id: 'dish_sub_default',
-              name: `${sub.plan_type || 'Tiffin'} Daily Meal`,
-              price: 150,
-              extraCharge: 0,
-            };
+        for (const sub of activeSubs) {
+          const pausedDates = sub.paused_dates || [];
+          if (pausedDates.includes(todayStr)) {
+            // Customer paused delivery for today
+            continue;
           }
-        }
-        const dishName = selectedDailyDish.name || selectedDailyDish.title || `${sub.plan_type || 'Tiffin'} Daily Meal`;
-        const mealPrice = Number(selectedDailyDish.price) || 150;
 
-        // Deduct the selected meal price from customer's subscription wallet balance
-        if (mealPrice > 0) {
-          try {
-            await updateDoc(doc(firestore, 'users', userDocId), {
-              wallet_balance: increment(-mealPrice),
+          if (typeof sub.meals_remaining === 'number' && sub.meals_remaining <= 0) {
+            continue;
+          }
+
+          for (const slotItem of candidateSlots) {
+            // 1. MUST be currently OPEN for booking right now
+            if (!checkIsSlotOpen(slotItem)) {
+              continue;
+            }
+
+            // 2. Plan type (Lunch vs Dinner vs Combo) MUST match this slot
+            if (!checkSubMatchesSlot(sub, slotItem)) {
+              continue;
+            }
+
+            // 3. Verify if already auto-booked for this specific slot today
+            const isCombo = `${sub.plan_type || ''} ${sub.plan_title || ''}`.toLowerCase().includes('combo');
+            const bookedForSlotToday = sub.last_auto_booked_slots?.[slotItem.id] === todayStr;
+            const alreadyBookedSingle = !isCombo && sub.last_auto_booked_date === todayStr;
+
+            if (bookedForSlotToday || alreadyBookedSingle) {
+              continue;
+            }
+
+            // Find matching meal for this slot
+            const nextCode = await getNextOrderCode();
+            let selectedDailyDish = sub.daily_menu?.[todayStr];
+            if (!selectedDailyDish) {
+              const matchingDish =
+                (menuItems || []).find((m: any) => m.slot_id === slotItem.id || m.is_active) ||
+                menuItems?.[0];
+              if (matchingDish) {
+                selectedDailyDish = {
+                  id: matchingDish.id,
+                  name: matchingDish.title || matchingDish.name,
+                  price: Number(matchingDish.price) || 150,
+                  extraCharge: 0,
+                };
+              } else {
+                selectedDailyDish = {
+                  id: `dish_sub_${slotItem.id || 'default'}`,
+                  name: `${slotItem.name || sub.plan_type || 'Tiffin'} Daily Meal`,
+                  price: 150,
+                  extraCharge: 0,
+                };
+              }
+            }
+
+            const dishName = selectedDailyDish.name || selectedDailyDish.title || `${slotItem.name || 'Tiffin'} Daily Meal`;
+            const mealPrice = Number(selectedDailyDish.price) || 150;
+
+            // 3. Verify a real, valid saved delivery address exists BEFORE deducting wallet or booking order!
+            const savedAddr: any = (user?.addresses && user.addresses.length > 0) ? user.addresses[0] : (sub.delivery_address || null);
+            if (!savedAddr || !savedAddr.line1 || savedAddr.line1.trim() === '') {
+              console.log('Skipping auto-booking for sub', sub.id, '- no delivery location saved on account.');
+              continue;
+            }
+
+            // Deduct meal price from wallet with strict 'debit' entry
+            if (mealPrice > 0) {
+              try {
+                await updateDoc(doc(firestore, 'users', userDocId), {
+                  wallet_balance: increment(-mealPrice),
+                  updated_at: new Date().toISOString(),
+                });
+                await addDoc(collection(firestore, 'wallet_transactions'), {
+                  user_id: userDocId,
+                  user_phone: cleanPhone,
+                  title: `Daily Meal: ${dishName}`,
+                  description: `Auto-booked for ${slotItem.name || sub.plan_type || 'Tiffin Slot'} (${nextCode})`,
+                  amount: mealPrice,
+                  type: 'debit',
+                  timestamp: new Date().toISOString(),
+                  created_at: new Date().toISOString(),
+                });
+                if (user && user.wallet_balance !== undefined) {
+                  setUser({ ...user, wallet_balance: Math.max(0, user.wallet_balance - mealPrice) });
+                }
+              } catch (walletErr) {
+                console.log('Notice deducting daily meal price from wallet:', walletErr);
+              }
+            }
+
+            const deliveryLat = savedAddr.latitude ?? null;
+            const deliveryLng = savedAddr.longitude ?? null;
+            const mapsLink = deliveryLat && deliveryLng ? `https://www.google.com/maps/search/?api=1&query=${deliveryLat},${deliveryLng}` : null;
+            const deliveryAddressObj = {
+              label: savedAddr.label || 'Home',
+              receiver_name: savedAddr.receiver_name || sub.user_name || user?.name || 'Customer',
+              receiver_phone: savedAddr.receiver_phone || cleanPhone,
+              line1: savedAddr.line1.trim(),
+              landmark: savedAddr.landmark || '',
+              city: savedAddr.city || '',
+              zip: savedAddr.zip || '',
+              latitude: deliveryLat,
+              longitude: deliveryLng,
+            };
+            const otpCode = Math.floor(1000 + Math.random() * 9000).toString();
+
+            await addDoc(collection(firestore, 'orders'), {
+              order_code: nextCode,
+              user_id: userDocId,
+              user_name: sub.user_name || user.name || 'Customer',
+              customer_name: sub.user_name || user.name || 'Customer',
+              user_phone: cleanPhone,
+              customer_phone: cleanPhone,
+              delivery_name: deliveryAddressObj.receiver_name,
+              delivery_phone: deliveryAddressObj.receiver_phone,
+              delivery_address: deliveryAddressObj,
+              delivery_lat: deliveryLat,
+              delivery_lng: deliveryLng,
+              delivery_distance_km: savedAddr?.distance_km ?? null,
+              maps_link: mapsLink,
+              otp_code: otpCode,
+              menu_title: dishName,
+              items: [
+                {
+                  id: selectedDailyDish.id || 'dish_sub',
+                  title: dishName,
+                  name: dishName,
+                  price: mealPrice,
+                  quantity: 1,
+                },
+              ],
+              total_amount: mealPrice,
+              subtotal: mealPrice,
+              delivery_fee: 0,
+              platform_fee: 0,
+              discount: 0,
+              payment_method: 'wallet',
+              payment_status: 'paid',
+              status: 'booked',
+              order_type: 'subscription_auto',
+              subscription_id: sub.id,
+              booking_date: todayStr,
+              slot_name: slotItem.name || sub.plan_type || 'Daily Meal',
+              created_at: new Date().toISOString(),
+              timestamp: new Date().toISOString(),
+            });
+
+            const updatedBookedSlots = { ...(sub.last_auto_booked_slots || {}), [slotItem.id]: todayStr };
+            await updateDoc(doc(firestore, 'subscriptions', sub.id), {
+              meals_remaining: increment(-1),
+              last_auto_booked_date: todayStr,
+              last_auto_booked_slots: updatedBookedSlots,
               updated_at: new Date().toISOString(),
             });
-            await addDoc(collection(firestore, 'wallet_transactions'), {
-              user_id: userDocId,
-              user_phone: cleanPhone,
-              title: `Daily Meal: ${dishName}`,
-              description: `Auto-booked for ${activeSlot.name || sub.plan_type || 'Tiffin Slot'} (${nextCode})`,
-              amount: mealPrice,
-              type: 'debit',
-              timestamp: new Date().toISOString(),
-              created_at: new Date().toISOString(),
-            });
-            if (user && user.wallet_balance !== undefined) {
-              setUser({ ...user, wallet_balance: Math.max(0, user.wallet_balance - mealPrice) });
-            }
-          } catch (walletErr) {
-            console.log('Notice deducting daily meal price from wallet:', walletErr);
+
+            triggerLocalNotification(
+              '🍱 Daily Tiffin Auto-Booked!',
+              `Your ${slotItem.name || 'tiffin'} meal (${dishName}) for today has been booked and scheduled with the kitchen!`,
+              { type: 'ORDER_UPDATE' }
+            );
           }
         }
-
-        const savedAddr: any = (user?.addresses && user.addresses.length > 0) ? user.addresses[0] : null;
-        const deliveryLat = savedAddr?.latitude ?? null;
-        const deliveryLng = savedAddr?.longitude ?? null;
-        const mapsLink = deliveryLat && deliveryLng ? `https://www.google.com/maps/search/?api=1&query=${deliveryLat},${deliveryLng}` : null;
-        const deliveryAddressObj = {
-          label: savedAddr?.label || 'Home',
-          receiver_name: savedAddr?.receiver_name || sub.user_name || user.name || 'Customer',
-          receiver_phone: savedAddr?.receiver_phone || cleanPhone,
-          line1: savedAddr?.line1 || (user as any).address || '',
-          landmark: savedAddr?.landmark || '',
-          city: savedAddr?.city || '',
-          zip: savedAddr?.zip || '',
-          latitude: deliveryLat,
-          longitude: deliveryLng,
-        };
-        const otpCode = Math.floor(1000 + Math.random() * 9000).toString();
-
-        await addDoc(collection(firestore, 'orders'), {
-          order_code: nextCode,
-          user_id: userDocId,
-          user_name: sub.user_name || user.name || 'Customer',
-          customer_name: sub.user_name || user.name || 'Customer',
-          user_phone: cleanPhone,
-          customer_phone: cleanPhone,
-          delivery_name: deliveryAddressObj.receiver_name,
-          delivery_phone: deliveryAddressObj.receiver_phone,
-          delivery_address: deliveryAddressObj,
-          delivery_lat: deliveryLat,
-          delivery_lng: deliveryLng,
-          delivery_distance_km: savedAddr?.distance_km ?? null,
-          maps_link: mapsLink,
-          otp_code: otpCode,
-          menu_title: dishName,
-          items: [
-            {
-              id: selectedDailyDish.id || 'dish_sub',
-              title: dishName,
-              name: dishName,
-              price: mealPrice,
-              quantity: 1,
-            },
-          ],
-          total_amount: mealPrice,
-          subtotal: mealPrice,
-          delivery_fee: 0,
-          platform_fee: 0,
-          discount: 0,
-          payment_method: 'wallet',
-          payment_status: 'paid',
-          status: 'booked',
-          order_type: 'subscription_auto',
-          subscription_id: sub.id,
-          booking_date: todayStr,
-          slot_name: activeSlot.name || sub.plan_type || 'Daily Meal',
-          created_at: new Date().toISOString(),
-          timestamp: new Date().toISOString(),
-        });
-
-        await updateDoc(doc(firestore, 'subscriptions', sub.id), {
-          meals_remaining: increment(-1),
-          last_auto_booked_date: todayStr,
-          updated_at: new Date().toISOString(),
-        });
-
-        triggerLocalNotification(
-          '🍱 Daily Tiffin Auto-Booked!',
-          `Your ${dishName} for today has been booked and scheduled with the kitchen!`,
-          { type: 'ORDER_UPDATE' }
-        );
       } catch (err) {
         console.log('Notice auto-booking daily subscription meal:', err);
       }
     };
 
-    autoBookMeal();
-  }, [userSubscriptions, activeSlot, user?.phone]);
+    runAutoBookingForOpenSlots();
+  }, [userSubscriptions, allSlots, activeSlot, user?.phone]);
 
   const activeValidSubs = useMemo(() => {
     const now = dayjs();
@@ -936,6 +1012,36 @@ export default function HomeScreen({ navigation }: any) {
             </Text>
           </TouchableOpacity>
         </View>
+
+        {/* Missing Delivery Location Notice for Active Subscribers */}
+        {primaryActiveSub && (!user?.addresses || user.addresses.length === 0 || !user.addresses[0]?.line1) && (
+          <TouchableOpacity
+            onPress={() => navigation.navigate('Profile')}
+            style={{
+              marginHorizontal: 16,
+              marginBottom: 12,
+              padding: 12,
+              borderRadius: 14,
+              backgroundColor: isDark ? 'rgba(239, 68, 68, 0.12)' : '#FEF2F2',
+              borderWidth: 1,
+              borderColor: isDark ? 'rgba(239, 68, 68, 0.3)' : '#FCA5A5',
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 10,
+            }}
+          >
+            <Text style={{ fontSize: 20 }}>📍</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 13, fontWeight: '700', color: isDark ? '#FCA5A5' : '#B91C1C' }}>
+                Delivery Location Required
+              </Text>
+              <Text style={{ fontSize: 11, color: isDark ? '#E5E7EB' : '#4B5563', marginTop: 2 }}>
+                Please save your delivery address so your daily tiffins can be auto-booked and delivered.
+              </Text>
+            </View>
+            <Text style={{ fontSize: 11, fontWeight: '700', color: '#EF4444' }}>Add ›</Text>
+          </TouchableOpacity>
+        )}
 
         {/* Dynamic Single Plan Subscription Banner */}
         {primaryActiveSub ? (

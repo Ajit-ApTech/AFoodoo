@@ -221,6 +221,7 @@ export default function PaymentApprovalsPage() {
           paused_dates: [],
           start_date: startDate,
           end_date: endDate,
+          delivery_address: sp.delivery_address || null,
           daily_menu: sp.daily_menu || {},
           payment_method: 'upi',
           amount_paid: req.amount,

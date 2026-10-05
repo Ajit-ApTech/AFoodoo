@@ -95,6 +95,19 @@ if (require.main === module) {
   app.listen(PORT, () => {
     logger.info(`🚀 Production-hardened server listening on port ${PORT}`);
     logger.info(`📖 OpenAPI Swagger docs available at http://localhost:${PORT}/docs`);
+
+    // Automated Slot Auto-Booking engine: runs every 5 minutes to auto-book open slots for active subscribers
+    setInterval(async () => {
+      try {
+        const { autoBookActiveSubscriptions } = await import('./routes/subscriptions');
+        const res = await autoBookActiveSubscriptions();
+        if (res.bookedCount > 0) {
+          logger.info(`🍱 Automated meal slot booking processed ${res.bookedCount} orders:`, res.details);
+        }
+      } catch (err: any) {
+        logger.warn('Scheduled slot auto-booking runner notice:', { error: err?.message });
+      }
+    }, 5 * 60 * 1000);
   });
 }
 

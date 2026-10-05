@@ -787,6 +787,55 @@ export default function BookingScreen({ route, navigation }: any) {
         deductWalletBalance(totalAmount, `Order #${orderCode} Booking 🍲`);
       }
 
+      // Automatically save / update this delivery address in user profile and store
+      if (addressLine1.trim() && user) {
+        try {
+          const currentAddresses: any[] = Array.isArray(user.addresses) ? [...user.addresses] : [];
+          const existingIdx = currentAddresses.findIndex(
+            (a: any) =>
+              (a.line1 || '').trim().toLowerCase() === addressLine1.trim().toLowerCase() &&
+              (a.city || '').trim().toLowerCase() === city.trim().toLowerCase()
+          );
+
+          const newAddr = {
+            id: existingIdx >= 0 ? currentAddresses[existingIdx].id : `addr_${Date.now()}`,
+            label: 'Home',
+            receiver_name: receiverName.trim() || user.name || 'Customer',
+            receiver_phone: receiverPhone.trim() || user.phone || '',
+            line1: addressLine1.trim(),
+            landmark: landmark.trim(),
+            city: city.trim(),
+            state: '',
+            zip: pincode.trim(),
+            latitude: targetLat ?? undefined,
+            longitude: targetLng ?? undefined,
+            distance_km: targetDist ?? undefined,
+          };
+
+          let updatedAddresses: any[];
+          if (existingIdx >= 0) {
+            currentAddresses[existingIdx] = newAddr;
+            updatedAddresses = currentAddresses;
+          } else {
+            updatedAddresses = [newAddr, ...currentAddresses];
+          }
+
+          const { setDoc } = require('firebase/firestore');
+          await setDoc(
+            doc(firestore, 'users', userId),
+            { addresses: updatedAddresses, address: addressLine1.trim() },
+            { merge: true }
+          );
+
+          setUser({
+            ...user,
+            addresses: updatedAddresses,
+          });
+        } catch (addrErr) {
+          console.log('Notice auto-saving delivery address to user profile:', addrErr);
+        }
+      }
+
       // 4. Update local Zustand store orders immediately
       const currentOrders = useAppStore.getState().orders;
       useAppStore.getState().setOrders([{ id: realOrderId, ...orderData }, ...currentOrders]);
