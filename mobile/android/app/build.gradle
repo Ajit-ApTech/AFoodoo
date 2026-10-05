@@ -85,14 +85,14 @@ android {
     ndkVersion rootProject.ext.ndkVersion
 
     buildToolsVersion rootProject.ext.buildToolsVersion
-    compileSdk rootProject.ext.compileSdkVersion
+    compileSdk 36
 
     namespace 'com.anonymous.afoodoo'
     defaultConfig {
         applicationId 'com.afoodoo.app'
         minSdkVersion rootProject.ext.minSdkVersion
-        targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 9
+        targetSdkVersion 36
+        versionCode 11
         versionName "1.0.0"
     }
     signingConfigs {
