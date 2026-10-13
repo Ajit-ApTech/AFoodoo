@@ -53,7 +53,7 @@ export default function HomeScreen({ navigation }: any) {
 
 
 
-  // Register push token & sync fcm_token with Firestore user document
+  // Register push token, persist user ID for background task, and register background auto-booking
   useEffect(() => {
     if (!user?.phone) return;
     const cleanPhone = user.phone.trim();
@@ -72,7 +72,18 @@ export default function HomeScreen({ navigation }: any) {
         }
       });
     } catch (e) {}
+
+    // Persist userId so the background task can read it without the app being open
+    import('@react-native-async-storage/async-storage').then(({ default: AsyncStorage }) => {
+      AsyncStorage.setItem('@afoodoo_user_id', userDocId).catch(() => {});
+    });
+
+    // Register background fetch task so auto-booking fires every ~15 min even when app is closed
+    import('../services/backgroundTaskService').then(({ registerAutoBookingBackgroundTask }) => {
+      registerAutoBookingBackgroundTask().catch(() => {});
+    });
   }, [user?.phone, user?.id]);
+
 
   // Realtime subscription to logged-in user document for live wallet balance & block status
   useEffect(() => {

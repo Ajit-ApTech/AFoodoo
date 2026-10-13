@@ -39,7 +39,9 @@
         "ACCESS_COARSE_LOCATION",
         "POST_NOTIFICATIONS",
         "RECEIVE_BOOT_COMPLETED",
-        "VIBRATE"
+        "VIBRATE",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_DATA_SYNC"
       ]
     },
     "web": {
@@ -59,6 +61,8 @@
           "color": "#F97316"
         }
       ],
+      "expo-background-fetch",
+      "expo-task-manager",
       "expo-asset",
       "expo-font"
     ],
