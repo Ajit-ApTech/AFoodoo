@@ -12,6 +12,9 @@ import {
   deleteDoc,
   getDoc,
   getDocs,
+  setDoc,
+  query,
+  where,
 } from 'firebase/firestore';
 import {
   Repeat,
@@ -36,6 +39,10 @@ import {
   ChevronRight,
   Trash2,
   XCircle,
+  History,
+  Power,
+  Zap,
+  ShieldCheck,
 } from 'lucide-react';
 import { sendExpoPushNotification } from '../../../lib/pushService';
 
@@ -78,7 +85,22 @@ export default function SubscriptionsManagementPage() {
 
   // Drawer & Modals State
   const [selectedSubForDrawer, setSelectedSubForDrawer] = useState<SubscriptionDoc | null>(null);
-  const [drawerTab, setDrawerTab] = useState<'overview' | 'calendar' | 'menu'>('overview');
+  const [drawerTab, setDrawerTab] = useState<'overview' | 'calendar' | 'menu' | 'history'>('overview');
+
+  // Auto-Booking System Global Settings State
+  const [autoBookingConfig, setAutoBookingConfig] = useState<{
+    enabled: boolean;
+    last_triggered_at?: string;
+    last_booked_count?: number;
+    last_open_slots?: string;
+    updated_by?: string;
+  }>({ enabled: true });
+  const [isTogglingAutoBooking, setIsTogglingAutoBooking] = useState(false);
+
+  // Drawer History Tab state
+  const [drawerOrders, setDrawerOrders] = useState<any[]>([]);
+  const [loadingDrawerOrders, setLoadingDrawerOrders] = useState(false);
+  const [isSingleCustomerBooking, setIsSingleCustomerBooking] = useState(false);
 
   // Bonus meals modal state
   const [selectedSubForMeals, setSelectedSubForMeals] = useState<SubscriptionDoc | null>(null);
@@ -137,6 +159,85 @@ export default function SubscriptionsManagementPage() {
       setLoading(false);
     }
   }, [selectedSubForDrawer?.id]);
+
+  // Subscribe to auto-booking settings from Firestore
+  useEffect(() => {
+    try {
+      const unsub = onSnapshot(doc(db, 'settings', 'auto_booking'), docSnap => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          setAutoBookingConfig({
+            enabled: data.enabled !== false,
+            last_triggered_at: data.last_triggered_at,
+            last_booked_count: data.last_booked_count,
+            last_open_slots: data.last_open_slots,
+            updated_by: data.updated_by,
+          });
+        } else {
+          setAutoBookingConfig({ enabled: true });
+        }
+      });
+      return unsub;
+    } catch (e) {
+      console.log('Error listening to auto_booking settings:', e);
+    }
+  }, []);
+
+  // Subscribe to orders for selected subscriber when drawer is open
+  useEffect(() => {
+    if (!selectedSubForDrawer?.id) {
+      setDrawerOrders([]);
+      return;
+    }
+
+    setLoadingDrawerOrders(true);
+    try {
+      const q = query(
+        collection(db, 'orders'),
+        where('subscription_id', '==', selectedSubForDrawer.id)
+      );
+      const unsub = onSnapshot(
+        q,
+        snap => {
+          const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          list.sort((a: any, b: any) => {
+            const timeA = new Date(a.created_at || a.timestamp || 0).getTime();
+            const timeB = new Date(b.created_at || b.timestamp || 0).getTime();
+            return timeB - timeA;
+          });
+          setDrawerOrders(list);
+          setLoadingDrawerOrders(false);
+        },
+        err => {
+          console.log('Error fetching subscription orders:', err);
+          setLoadingDrawerOrders(false);
+        }
+      );
+      return unsub;
+    } catch (e) {
+      setLoadingDrawerOrders(false);
+    }
+  }, [selectedSubForDrawer?.id]);
+
+  const handleToggleAutoBooking = async () => {
+    const nextState = !autoBookingConfig.enabled;
+    setIsTogglingAutoBooking(true);
+    try {
+      await setDoc(
+        doc(db, 'settings', 'auto_booking'),
+        {
+          enabled: nextState,
+          updated_at: new Date().toISOString(),
+          updated_by: 'admin',
+        },
+        { merge: true }
+      );
+    } catch (err: any) {
+      alert(`Failed to update auto-booking setting: ${err.message}`);
+    } finally {
+      setIsTogglingAutoBooking(false);
+    }
+  };
 
   // Helper to determine status
   const getSubStatus = (sub: SubscriptionDoc): 'active' | 'paused' | 'expired' | 'cancelled' => {
@@ -596,6 +697,31 @@ export default function SubscriptionsManagementPage() {
 
           if (bookedForSlotToday || alreadyBookedSingle) continue;
 
+          // Double-booking safety guard: live Firestore check for existing order today
+          try {
+            const existingOrdersSnap = await getDocs(
+              query(
+                collection(db, 'orders'),
+                where('subscription_id', '==', sub.id),
+                where('booking_date', '==', todayStr)
+              )
+            );
+            if (!existingOrdersSnap.empty) {
+              const alreadyOrderedForThisSlot = existingOrdersSnap.docs.some((d: any) => {
+                const o = d.data();
+                if (!isCombo) return true;
+                const ordSlot = (o.slot_name || '').toLowerCase();
+                const targetSlot = (slot.name || '').toLowerCase();
+                return (
+                  (ordSlot.includes('lunch') && targetSlot.includes('lunch')) ||
+                  (ordSlot.includes('dinner') && targetSlot.includes('dinner')) ||
+                  ordSlot === targetSlot
+                );
+              });
+              if (alreadyOrderedForThisSlot) continue;
+            }
+          } catch (ordCheckErr) {}
+
           const orderCode = `AF-${Math.floor(1000 + Math.random() * 9000)}`;
           const mealPrice = 150;
           const dishName = `${slot.name || 'Tiffin'} Daily Meal`;
@@ -718,6 +844,20 @@ export default function SubscriptionsManagementPage() {
         }
       }
 
+      // Update global settings log in Firestore
+      try {
+        await setDoc(
+          doc(db, 'settings', 'auto_booking'),
+          {
+            last_triggered_at: new Date().toISOString(),
+            last_booked_count: bookedCount,
+            last_open_slots: openSlotNames,
+            updated_by: 'admin',
+          },
+          { merge: true }
+        );
+      } catch (logErr) {}
+
       alert(
         `✅ Slot Auto-Booking Complete!\n\nOpen slot(s): ${openSlotNames}\nSuccessfully auto-booked: ${bookedCount} order(s).`
       );
@@ -725,6 +865,230 @@ export default function SubscriptionsManagementPage() {
       alert(`Error during auto-booking: ${err.message}`);
     } finally {
       setIsAutoBooking(false);
+    }
+  };
+
+  // Force single-customer auto-book from Drawer
+  const handleSingleCustomerAutoBook = async (sub: SubscriptionDoc) => {
+    if (!sub || !sub.id) return;
+    setIsSingleCustomerBooking(true);
+    try {
+      const now = new Date();
+      const nowMs = now.getTime();
+      const todayStr = now.toISOString().slice(0, 10);
+
+      const parseTimeToMs = (timeVal: string): number | null => {
+        if (!timeVal) return null;
+        const match = timeVal.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+        if (match) {
+          let hours = parseInt(match[1], 10);
+          const minutes = parseInt(match[2], 10);
+          const ampm = match[3].toUpperCase();
+          if (ampm === 'PM' && hours < 12) hours += 12;
+          if (ampm === 'AM' && hours === 12) hours = 0;
+          const d = new Date(now);
+          d.setHours(hours, minutes, 0, 0);
+          return d.getTime();
+        }
+        const d = new Date(timeVal);
+        return isNaN(d.getTime()) ? null : d.getTime();
+      };
+
+      const slotsSnap = await getDocs(collection(db, 'meal_slots'));
+      const allSlots: any[] = slotsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+      const openSlots = allSlots.filter(s => {
+        if (s.active === false) return false;
+        const openMs = parseTimeToMs(s.booking_open_time || '05:00 AM');
+        const cutoffMs = parseTimeToMs(s.booking_cutoff_time || '11:59 AM');
+        if (!openMs || !cutoffMs) return false;
+        return nowMs >= openMs && nowMs < cutoffMs;
+      });
+
+      const planStr = `${sub.plan_type || ''} ${sub.plan_title || ''}`.toLowerCase();
+      const matchingSlot = openSlots.find(slot => {
+        const slotStr = `${slot.name || ''}`.toLowerCase();
+        if (planStr.includes('combo') || planStr.includes('lunch + dinner')) {
+          return slotStr.includes('lunch') || slotStr.includes('dinner');
+        } else if (planStr.includes('lunch')) {
+          return slotStr.includes('lunch');
+        } else if (planStr.includes('dinner')) {
+          return slotStr.includes('dinner');
+        }
+        return true;
+      });
+
+      if (!matchingSlot) {
+        alert(
+          `ℹ️ No matching meal slots are currently open for booking.\n\nSubscriber's plan: ${sub.plan_type || sub.plan_title || 'Tiffin'}.\nOpen slots right now: ${
+            openSlots.length > 0 ? openSlots.map(s => s.name).join(', ') : 'None'
+          }\n\nAuto-booking is allowed during slot booking windows (e.g. Lunch 07:00 AM – 11:59 AM).`
+        );
+        return;
+      }
+
+      if (sub.paused_dates?.includes(todayStr)) {
+        alert(`Subscriber has paused/skipped deliveries for today (${todayStr}).`);
+        return;
+      }
+
+      if ((sub.meals_remaining ?? 0) <= 0) {
+        alert(`This subscription has 0 meals remaining.`);
+        return;
+      }
+
+      const isCombo = planStr.includes('combo');
+      const lastSlots: any = (sub as any).last_auto_booked_slots || {};
+      const bookedForSlotToday = lastSlots[matchingSlot.id] === todayStr;
+      const alreadyBookedSingle = !isCombo && sub.last_auto_booked_date === todayStr;
+
+      const existingOrdersSnap = await getDocs(
+        query(
+          collection(db, 'orders'),
+          where('subscription_id', '==', sub.id),
+          where('booking_date', '==', todayStr)
+        )
+      );
+      const alreadyOrdered = existingOrdersSnap.docs.some((d: any) => {
+        const o = d.data();
+        if (!isCombo) return true;
+        const ordSlot = (o.slot_name || '').toLowerCase();
+        const targetSlot = (matchingSlot.name || '').toLowerCase();
+        return (
+          (ordSlot.includes('lunch') && targetSlot.includes('lunch')) ||
+          (ordSlot.includes('dinner') && targetSlot.includes('dinner')) ||
+          ordSlot === targetSlot
+        );
+      });
+
+      if (bookedForSlotToday || alreadyBookedSingle || alreadyOrdered) {
+        alert(`Today's meal for ${matchingSlot.name} has ALREADY been booked for this subscriber!`);
+        return;
+      }
+
+      const orderCode = `AF-${Math.floor(1000 + Math.random() * 9000)}`;
+      const mealPrice = 150;
+      const dishName = `${matchingSlot.name || 'Tiffin'} Daily Meal`;
+      const userId = sub.user_id;
+
+      let userPushToken: string | null = null;
+      let savedAddress: any = (sub as any).delivery_address || null;
+      if (userId) {
+        try {
+          const uSnap = await getDoc(doc(db, 'users', userId));
+          if (uSnap.exists()) {
+            const uData = uSnap.data();
+            userPushToken = uData?.expo_push_token || uData?.fcm_token || null;
+            if (!savedAddress && Array.isArray(uData?.addresses) && uData.addresses.length > 0) {
+              savedAddress = uData.addresses[0];
+            }
+          }
+        } catch (uErr) {}
+      }
+
+      if (!savedAddress || !savedAddress.line1 || savedAddress.line1.trim() === '') {
+        alert(`Cannot auto-book: Customer does not have a saved delivery address on their account.`);
+        return;
+      }
+
+      if (userId && mealPrice > 0) {
+        try {
+          await updateDoc(doc(db, 'users', userId), {
+            wallet_balance: increment(-mealPrice),
+          });
+          await addDoc(collection(db, 'wallet_transactions'), {
+            user_id: userId,
+            user_phone: sub.user_phone || '',
+            title: `Daily Meal: ${dishName}`,
+            description: `Auto-booked for ${matchingSlot.name} (${orderCode})`,
+            amount: mealPrice,
+            type: 'debit',
+            timestamp: new Date().toISOString(),
+            created_at: new Date().toISOString(),
+          });
+        } catch (wErr) {}
+      }
+
+      const deliveryLat = savedAddress.latitude ?? null;
+      const deliveryLng = savedAddress.longitude ?? null;
+      const mapsLink =
+        deliveryLat && deliveryLng
+          ? `https://www.google.com/maps/search/?api=1&query=${deliveryLat},${deliveryLng}`
+          : null;
+
+      const ordRef = await addDoc(collection(db, 'orders'), {
+        order_code: orderCode,
+        user_id: userId || '',
+        user_name: sub.user_name || 'Customer',
+        customer_name: sub.user_name || 'Customer',
+        user_phone: sub.user_phone || '',
+        customer_phone: sub.user_phone || '',
+        delivery_name: savedAddress.receiver_name || sub.user_name || 'Customer',
+        delivery_phone: savedAddress.receiver_phone || sub.user_phone || '',
+        delivery_address: {
+          label: savedAddress.label || 'Home',
+          receiver_name: savedAddress.receiver_name || sub.user_name || 'Customer',
+          receiver_phone: savedAddress.receiver_phone || sub.user_phone || '',
+          line1: savedAddress.line1.trim(),
+          landmark: savedAddress.landmark || '',
+          city: savedAddress.city || '',
+          zip: savedAddress.zip || '',
+          latitude: deliveryLat,
+          longitude: deliveryLng,
+        },
+        delivery_lat: deliveryLat,
+        delivery_lng: deliveryLng,
+        delivery_distance_km: savedAddress.distance_km ?? null,
+        maps_link: mapsLink,
+        otp_code: Math.floor(1000 + Math.random() * 9000).toString(),
+        menu_title: dishName,
+        items: [
+          {
+            id: 'dish_sub_auto',
+            title: dishName,
+            name: dishName,
+            price: mealPrice,
+            quantity: 1,
+          },
+        ],
+        total_amount: mealPrice,
+        subtotal: mealPrice,
+        delivery_fee: 0,
+        platform_fee: 0,
+        discount: 0,
+        payment_method: 'wallet',
+        payment_status: 'paid',
+        status: 'booked',
+        order_type: 'subscription_auto',
+        subscription_id: sub.id,
+        booking_date: todayStr,
+        slot_name: matchingSlot.name || 'Daily Meal',
+        created_at: new Date().toISOString(),
+        timestamp: new Date().toISOString(),
+      });
+
+      const updatedBookedSlots = { ...lastSlots, [matchingSlot.id]: todayStr };
+      await updateDoc(doc(db, 'subscriptions', sub.id), {
+        meals_remaining: increment(-1),
+        last_auto_booked_date: todayStr,
+        last_auto_booked_slots: updatedBookedSlots,
+        updated_at: new Date().toISOString(),
+      });
+
+      if (userPushToken) {
+        sendExpoPushNotification(
+          [userPushToken],
+          '🍱 Daily Tiffin Auto-Booked!',
+          `Your ${matchingSlot.name || 'tiffin'} meal (${dishName}) for today has been booked and scheduled with the kitchen!`,
+          { orderId: ordRef.id, type: 'ORDER_UPDATE' }
+        );
+      }
+
+      alert(`✅ Successfully booked today's ${matchingSlot.name} for ${sub.user_name || 'Customer'}!\nOrder Code: ${orderCode}`);
+    } catch (err: any) {
+      alert(`Failed to book meal: ${err.message}`);
+    } finally {
+      setIsSingleCustomerBooking(false);
     }
   };
 
@@ -745,16 +1109,6 @@ export default function SubscriptionsManagementPage() {
         </div>
 
         <div className="flex items-center gap-3">
-          <button
-            onClick={handleTriggerAutoBooking}
-            disabled={isAutoBooking}
-            className="flex items-center gap-2 bg-orange-600 hover:bg-orange-500 text-white border border-orange-500/50 px-4 py-2.5 rounded-xl text-xs font-semibold transition shadow-md disabled:opacity-50 cursor-pointer"
-            title="Auto-book meals for all active subscriptions whose meal slot is currently open"
-          >
-            <Clock className={`h-4 w-4 ${isAutoBooking ? 'animate-spin' : ''}`} />
-            <span>{isAutoBooking ? 'Booking...' : '⚡ Auto-Book Open Slots'}</span>
-          </button>
-
           {activeTab === 'expired' && subscriptions.some(s => {
             const st = getSubStatus(s);
             return st === 'expired' || st === 'cancelled';
@@ -821,6 +1175,102 @@ export default function SubscriptionsManagementPage() {
           </div>
           <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400">
             <AlertTriangle className="h-6 w-6" />
+          </div>
+        </div>
+      </div>
+
+      {/* Auto-Booking Engine Master Control Panel */}
+      <div className="bg-gradient-to-r from-slate-900 via-purple-950/20 to-slate-900 border border-purple-500/30 rounded-2xl p-5 shadow-xl">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="flex items-start gap-4">
+            <div className={`p-3 rounded-2xl border ${
+              autoBookingConfig.enabled
+                ? 'bg-purple-600/20 border-purple-500/40 text-purple-400'
+                : 'bg-amber-600/20 border-amber-500/40 text-amber-400'
+            }`}>
+              <Zap className="h-6 w-6" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <h3 className="text-base font-extrabold text-white tracking-tight">
+                  Auto-Booking Management Engine
+                </h3>
+                {autoBookingConfig.enabled ? (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                    <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                    SYSTEM ACTIVE
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30">
+                    <span className="h-2 w-2 rounded-full bg-amber-400" />
+                    PAUSED GLOBALLY
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-400 mt-1 max-w-2xl leading-relaxed">
+                Controls daily meal booking for active subscribers during slot windows. Double-booking is automatically prevented by live Firestore verification.
+              </p>
+
+              {/* Last Run Stats */}
+              <div className="flex items-center gap-4 mt-3 text-xs text-slate-300 flex-wrap">
+                <div className="flex items-center gap-1.5 text-slate-400">
+                  <Clock className="h-3.5 w-3.5 text-purple-400" />
+                  <span>Last Triggered:</span>
+                  <span className="text-white font-mono font-medium">
+                    {autoBookingConfig.last_triggered_at
+                      ? new Date(autoBookingConfig.last_triggered_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) +
+                        ' (' + new Date(autoBookingConfig.last_triggered_at).toLocaleDateString() + ')'
+                      : 'Not run yet today'}
+                  </span>
+                </div>
+                {autoBookingConfig.last_booked_count !== undefined && (
+                  <div className="flex items-center gap-1.5 text-slate-400">
+                    <CheckCircle className="h-3.5 w-3.5 text-emerald-400" />
+                    <span>Last Run Created:</span>
+                    <span className="text-emerald-400 font-bold">
+                      {autoBookingConfig.last_booked_count} meal order(s)
+                    </span>
+                  </div>
+                )}
+                {autoBookingConfig.last_open_slots && (
+                  <div className="flex items-center gap-1.5 text-slate-400">
+                    <Utensils className="h-3.5 w-3.5 text-indigo-400" />
+                    <span>Slot:</span>
+                    <span className="text-indigo-300 font-medium">
+                      {autoBookingConfig.last_open_slots}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2.5 self-start lg:self-center shrink-0">
+            {/* Global Pause / Resume Toggle */}
+            <button
+              onClick={handleToggleAutoBooking}
+              disabled={isTogglingAutoBooking}
+              className={`flex items-center gap-2 px-3.5 py-2.5 rounded-xl text-xs font-bold transition border cursor-pointer ${
+                autoBookingConfig.enabled
+                  ? 'bg-slate-800 hover:bg-amber-600/20 text-slate-300 hover:text-amber-300 border-slate-700 hover:border-amber-500/30'
+                  : 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500/50'
+              }`}
+              title={autoBookingConfig.enabled ? 'Pause auto-booking globally across mobile & admin' : 'Re-enable auto-booking'}
+            >
+              <Power className="h-4 w-4" />
+              <span>{autoBookingConfig.enabled ? 'Pause Auto-Booking' : 'Enable Auto-Booking'}</span>
+            </button>
+
+            {/* Run Auto-Booking Now Button */}
+            <button
+              onClick={handleTriggerAutoBooking}
+              disabled={isAutoBooking || !autoBookingConfig.enabled}
+              className="flex items-center gap-2 bg-gradient-to-r from-orange-600 to-amber-600 hover:from-orange-500 hover:to-amber-500 text-white border border-orange-500/50 px-4 py-2.5 rounded-xl text-xs font-bold transition shadow-lg shadow-orange-500/20 disabled:opacity-50 cursor-pointer"
+              title="Immediately book meals for all active subscribers for open slots"
+            >
+              <Zap className={`h-4 w-4 ${isAutoBooking ? 'animate-spin' : ''}`} />
+              <span>{isAutoBooking ? 'Booking Open Slots...' : '⚡ Trigger Auto-Book Now'}</span>
+            </button>
           </div>
         </div>
       </div>
@@ -1258,6 +1708,17 @@ export default function SubscriptionsManagementPage() {
                 >
                   Day-Wise Menu
                 </button>
+                <button
+                  onClick={() => setDrawerTab('history')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
+                    drawerTab === 'history'
+                      ? 'bg-purple-600 text-white'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <History className="h-3.5 w-3.5" />
+                  <span>Booking History</span>
+                </button>
               </div>
 
               {/* Tab 1: Overview */}
@@ -1483,6 +1944,174 @@ export default function SubscriptionsManagementPage() {
                       Customer is on the standard daily chef special menu (no custom dish overrides).
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* Tab 4: Booking & Auto-Booking History */}
+              {drawerTab === 'history' && (
+                <div className="space-y-4">
+                  {/* Today's Auto-Booking Status Card */}
+                  {(() => {
+                    const todayStr = new Date().toISOString().slice(0, 10);
+                    const isPausedToday = selectedSubForDrawer.paused_dates?.includes(todayStr);
+                    const todayOrders = drawerOrders.filter(
+                      o => o.booking_date === todayStr || (o.created_at && o.created_at.slice(0, 10) === todayStr)
+                    );
+                    const hasTodayOrder = todayOrders.length > 0;
+                    const subStatus = getSubStatus(selectedSubForDrawer);
+                    const canForceBook =
+                      subStatus === 'active' &&
+                      !isPausedToday &&
+                      (selectedSubForDrawer.meals_remaining ?? 0) > 0 &&
+                      !hasTodayOrder;
+
+                    return (
+                      <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-3">
+                        <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
+                          <div>
+                            <span className="text-[11px] font-semibold text-slate-400 block">
+                              Today's Booking Status ({todayStr})
+                            </span>
+                            <span className="text-xs font-bold text-slate-200">
+                              {selectedSubForDrawer.plan_type || selectedSubForDrawer.plan_title || 'Meal Plan'}
+                            </span>
+                          </div>
+
+                          {isPausedToday ? (
+                            <span className="px-2.5 py-1 rounded-md text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30">
+                              PAUSED / SKIPPED TODAY
+                            </span>
+                          ) : hasTodayOrder ? (
+                            <span className="px-2.5 py-1 rounded-md text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
+                              <CheckCircle className="h-3 w-3" />
+                              BOOKED FOR TODAY
+                            </span>
+                          ) : (
+                            <span className="px-2.5 py-1 rounded-md text-[10px] font-bold bg-slate-800 text-slate-400 border border-slate-700">
+                              NOT YET BOOKED
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Today's Orders if any */}
+                        {hasTodayOrder && (
+                          <div className="space-y-2">
+                            {todayOrders.map(ord => (
+                              <div
+                                key={ord.id}
+                                className="p-2.5 rounded-xl bg-slate-900 border border-emerald-500/30 flex items-center justify-between text-xs"
+                              >
+                                <div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-mono font-bold text-purple-400">{ord.order_code || ord.id.slice(0, 8)}</span>
+                                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-semibold uppercase">
+                                      {ord.status || 'booked'}
+                                    </span>
+                                  </div>
+                                  <span className="text-slate-300 block mt-0.5 font-medium">
+                                    {ord.menu_title || ord.slot_name || 'Daily Meal'}
+                                  </span>
+                                </div>
+                                <span className="font-mono text-emerald-400 font-bold">
+                                  ₹{ord.total_amount ?? 150}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Force Book button if not yet booked */}
+                        {canForceBook && (
+                          <button
+                            onClick={() => handleSingleCustomerAutoBook(selectedSubForDrawer)}
+                            disabled={isSingleCustomerBooking}
+                            className="w-full py-2 px-3 rounded-xl bg-orange-600 hover:bg-orange-500 text-white font-bold text-xs transition flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer shadow-md"
+                          >
+                            <Zap className={`h-3.5 w-3.5 ${isSingleCustomerBooking ? 'animate-spin' : ''}`} />
+                            <span>{isSingleCustomerBooking ? 'Booking Meal...' : '⚡ Auto-Book Today for this Subscriber'}</span>
+                          </button>
+                        )}
+
+                        {/* Diagnostic Sub Fields */}
+                        <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-800/80 text-[11px] text-slate-400">
+                          <div>
+                            <span className="text-slate-500 block">Last Auto-Book Date:</span>
+                            <span className="font-mono text-slate-200">
+                              {selectedSubForDrawer.last_auto_booked_date || 'None'}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-slate-500 block">Slots Booked:</span>
+                            <span className="font-mono text-slate-200">
+                              {(selectedSubForDrawer as any).last_auto_booked_slots
+                                ? Object.keys((selectedSubForDrawer as any).last_auto_booked_slots).join(', ')
+                                : 'None'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* All Orders History for this Subscription */}
+                  <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-3">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                      <h4 className="font-bold text-white text-xs uppercase tracking-wider flex items-center gap-1.5">
+                        <History className="h-3.5 w-3.5 text-purple-400" />
+                        <span>Order History ({drawerOrders.length})</span>
+                      </h4>
+                      <span className="text-[10px] text-slate-500 font-mono">Live Firestore Feed</span>
+                    </div>
+
+                    {loadingDrawerOrders ? (
+                      <div className="p-6 text-center text-slate-500 text-xs">
+                        Loading orders...
+                      </div>
+                    ) : drawerOrders.length > 0 ? (
+                      <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                        {drawerOrders.map(ord => (
+                          <div
+                            key={ord.id}
+                            className="p-3 rounded-xl bg-slate-900 border border-slate-800 text-xs hover:border-slate-700 transition"
+                          >
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="font-mono font-bold text-purple-400">
+                                {ord.order_code || ord.id.slice(0, 8)}
+                              </span>
+                              <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${
+                                ord.status === 'delivered'
+                                  ? 'bg-emerald-500/20 text-emerald-300'
+                                  : ord.status === 'cancelled'
+                                  ? 'bg-rose-500/20 text-rose-300'
+                                  : 'bg-indigo-500/20 text-indigo-300'
+                              }`}>
+                                {ord.status || 'booked'}
+                              </span>
+                            </div>
+
+                            <div className="text-slate-200 font-medium">
+                              {ord.menu_title || ord.slot_name || 'Daily Meal'}
+                            </div>
+
+                            <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-800/60 text-[11px] text-slate-400">
+                              <span>
+                                {ord.booking_date ||
+                                  (ord.created_at ? new Date(ord.created_at).toLocaleDateString() : 'N/A')}
+                                {ord.slot_name ? ` • ${ord.slot_name}` : ''}
+                              </span>
+                              <span className="font-mono font-bold text-emerald-400">
+                                ₹{ord.total_amount ?? 150}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="p-6 text-center text-slate-500 text-xs">
+                        No orders recorded yet for this subscription.
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>

@@ -471,9 +471,18 @@ export default function HomeScreen({ navigation }: any) {
 
     const runAutoBookingForOpenSlots = async () => {
       try {
-        const { collection, addDoc, doc, updateDoc, increment } = require('firebase/firestore');
+        const { collection, addDoc, doc, updateDoc, increment, query, where, getDocs, getDoc } = require('firebase/firestore');
         const { getNextOrderCode } = require('../api/orderCode');
         const { triggerLocalNotification } = require('../services/notificationService');
+
+        // Check if admin has globally paused/disabled auto-booking
+        try {
+          const settingsSnap = await getDoc(doc(firestore, 'settings', 'auto_booking'));
+          if (settingsSnap.exists() && settingsSnap.data()?.enabled === false) {
+            console.log('[AutoBook] Auto-booking is globally disabled by Admin settings. Skipping.');
+            return;
+          }
+        } catch (settingsErr) {}
 
         for (const sub of activeSubs) {
           const pausedDates = sub.paused_dates || [];
@@ -497,13 +506,42 @@ export default function HomeScreen({ navigation }: any) {
               continue;
             }
 
-            // 3. Verify if already auto-booked for this specific slot today
+            // 3. Verify if already auto-booked for this specific slot today in local state
             const isCombo = `${sub.plan_type || ''} ${sub.plan_title || ''}`.toLowerCase().includes('combo');
             const bookedForSlotToday = sub.last_auto_booked_slots?.[slotItem.id] === todayStr;
             const alreadyBookedSingle = !isCombo && sub.last_auto_booked_date === todayStr;
 
             if (bookedForSlotToday || alreadyBookedSingle) {
               continue;
+            }
+
+            // 4. Double-booking guard: Live Firestore check if an order was already booked today (e.g. by Admin panel)
+            try {
+              const existingOrdersSnap = await getDocs(
+                query(
+                  collection(firestore, 'orders'),
+                  where('subscription_id', '==', sub.id),
+                  where('booking_date', '==', todayStr)
+                )
+              );
+              if (!existingOrdersSnap.empty) {
+                const alreadyOrderedForThisSlot = existingOrdersSnap.docs.some((d: any) => {
+                  const o = d.data();
+                  if (!isCombo) return true;
+                  const ordSlot = (o.slot_name || '').toLowerCase();
+                  const targetSlot = (slotItem.name || '').toLowerCase();
+                  return (
+                    (ordSlot.includes('lunch') && targetSlot.includes('lunch')) ||
+                    (ordSlot.includes('dinner') && targetSlot.includes('dinner')) ||
+                    ordSlot === targetSlot
+                  );
+                });
+                if (alreadyOrderedForThisSlot) {
+                  continue;
+                }
+              }
+            } catch (errCheck) {
+              console.log('Notice checking existing order today:', errCheck);
             }
 
             // Find matching meal for this slot
