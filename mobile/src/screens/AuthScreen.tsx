@@ -31,7 +31,6 @@ export default function AuthScreen({ navigation }: any) {
   const [countryCode, setCountryCode] = useState('91');
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
-  const [address, setAddress] = useState('');
   const [showCountryPicker, setShowCountryPicker] = useState(false);
   const [loading, setLoading] = useState(false);
   const setUser = useAppStore(state => state.setUser);
@@ -77,21 +76,8 @@ export default function AuthScreen({ navigation }: any) {
       }
 
       const userAddresses =
-        firestoreUserData?.addresses && firestoreUserData.addresses.length > 0
+        firestoreUserData?.addresses && Array.isArray(firestoreUserData.addresses)
           ? firestoreUserData.addresses
-          : address.trim()
-          ? [
-              {
-                id: 'addr_1',
-                label: 'Home',
-                line1: address.trim(),
-                city: '',
-                state: '',
-                zip: '',
-                latitude: 0,
-                longitude: 0,
-              },
-            ]
           : [];
 
       const authenticatedUser = {
@@ -224,25 +210,6 @@ export default function AuthScreen({ navigation }: any) {
                 Full number: {fullPhone}
               </Text>
             )}
-          </View>
-
-          {/* Delivery Address */}
-          <View style={styles.inputGroup}>
-            <Text style={[styles.inputLabel, { color: theme.textPrimary }]}>Delivery Address 📍</Text>
-            <TextInput
-              placeholder="Flat No., Building, Street (Optional)"
-              placeholderTextColor={theme.textMuted}
-              style={[
-                styles.input,
-                {
-                  backgroundColor: theme.inputBg,
-                  borderColor: theme.inputBorder,
-                  color: theme.inputText,
-                },
-              ]}
-              value={address}
-              onChangeText={setAddress}
-            />
           </View>
 
           <TouchableOpacity

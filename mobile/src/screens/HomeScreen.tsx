@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -41,6 +41,9 @@ export default function HomeScreen({ navigation }: any) {
   const [nowTime, setNowTime] = useState<dayjs.Dayjs>(dayjs());
   const [loading, setLoading] = useState<boolean>(true);
   const [userSubscriptions, setUserSubscriptions] = useState<any[]>([]);
+  // In-flight mutex lock & session cache to prevent duplicate concurrent auto-booking runs
+  const isAutoBookingRunningRef = useRef<boolean>(false);
+  const bookedSlotsCacheRef = useRef<Set<string>>(new Set());
 
   // Load menu items if not already cached
   useEffect(() => {
@@ -470,8 +473,13 @@ export default function HomeScreen({ navigation }: any) {
     };
 
     const runAutoBookingForOpenSlots = async () => {
+      // 1. Mutex Guard: Reject any concurrent invocation while one is already processing
+      if (isAutoBookingRunningRef.current) {
+        return;
+      }
+      isAutoBookingRunningRef.current = true;
       try {
-        const { collection, addDoc, doc, updateDoc, increment, query, where, getDocs, getDoc } = require('firebase/firestore');
+        const { collection, addDoc, doc, updateDoc, increment, query, where, getDocs, getDoc, setDoc } = require('firebase/firestore');
         const { getNextOrderCode } = require('../api/orderCode');
         const { triggerLocalNotification } = require('../services/notificationService');
 
@@ -506,16 +514,37 @@ export default function HomeScreen({ navigation }: any) {
               continue;
             }
 
-            // 3. Verify if already auto-booked for this specific slot today in local state
+            // 3. In-memory session cache guard: check if already booked in this app session
+            const bookingKey = `${sub.id}_${slotItem.id}_${todayStr}`;
+            const subDayKey = `${sub.id}_${todayStr}`;
             const isCombo = `${sub.plan_type || ''} ${sub.plan_title || ''}`.toLowerCase().includes('combo');
+
+            if (bookedSlotsCacheRef.current.has(bookingKey) || (!isCombo && bookedSlotsCacheRef.current.has(subDayKey))) {
+              continue;
+            }
+
+            // 4. Verify if already auto-booked for this specific slot today in sub document state
             const bookedForSlotToday = sub.last_auto_booked_slots?.[slotItem.id] === todayStr;
             const alreadyBookedSingle = !isCombo && sub.last_auto_booked_date === todayStr;
 
             if (bookedForSlotToday || alreadyBookedSingle) {
+              bookedSlotsCacheRef.current.add(bookingKey);
+              if (!isCombo) bookedSlotsCacheRef.current.add(subDayKey);
               continue;
             }
 
-            // 4. Double-booking guard: Live Firestore check if an order was already booked today (e.g. by Admin panel)
+            // 5. Deterministic Document ID guard: physical Firestore idempotency
+            const deterministicOrderDocId = `sub_${sub.id}_${slotItem.id}_${todayStr}`;
+            try {
+              const existingDocSnap = await getDoc(doc(firestore, 'orders', deterministicOrderDocId));
+              if (existingDocSnap.exists()) {
+                bookedSlotsCacheRef.current.add(bookingKey);
+                if (!isCombo) bookedSlotsCacheRef.current.add(subDayKey);
+                continue;
+              }
+            } catch (docCheckErr) {}
+
+            // 6. Double-booking guard: Live Firestore query check (e.g. booked by Admin panel or previous order)
             try {
               const existingOrdersSnap = await getDocs(
                 query(
@@ -537,12 +566,18 @@ export default function HomeScreen({ navigation }: any) {
                   );
                 });
                 if (alreadyOrderedForThisSlot) {
+                  bookedSlotsCacheRef.current.add(bookingKey);
+                  if (!isCombo) bookedSlotsCacheRef.current.add(subDayKey);
                   continue;
                 }
               }
             } catch (errCheck) {
               console.log('Notice checking existing order today:', errCheck);
             }
+
+            // Immediately mark in session cache before async operations so no race condition can slip past
+            bookedSlotsCacheRef.current.add(bookingKey);
+            if (!isCombo) bookedSlotsCacheRef.current.add(subDayKey);
 
             // Find matching meal for this slot
             const nextCode = await getNextOrderCode();
@@ -571,7 +606,7 @@ export default function HomeScreen({ navigation }: any) {
             const dishName = selectedDailyDish.name || selectedDailyDish.title || `${slotItem.name || 'Tiffin'} Daily Meal`;
             const mealPrice = Number(selectedDailyDish.price) || 150;
 
-            // 3. Verify a real, valid saved delivery address exists BEFORE deducting wallet or booking order!
+            // Verify a real, valid saved delivery address exists BEFORE deducting wallet or booking order!
             const savedAddr: any = (user?.addresses && user.addresses.length > 0) ? user.addresses[0] : (sub.delivery_address || null);
             if (!savedAddr || !savedAddr.line1 || savedAddr.line1.trim() === '') {
               console.log('Skipping auto-booking for sub', sub.id, '- no delivery location saved on account.');
@@ -619,7 +654,8 @@ export default function HomeScreen({ navigation }: any) {
             };
             const otpCode = Math.floor(1000 + Math.random() * 9000).toString();
 
-            await addDoc(collection(firestore, 'orders'), {
+            // Use setDoc with deterministic order doc ID to physically prevent any duplicate records in Firestore
+            await setDoc(doc(firestore, 'orders', deterministicOrderDocId), {
               order_code: nextCode,
               user_id: userDocId,
               user_name: sub.user_name || user.name || 'Customer',
@@ -660,7 +696,12 @@ export default function HomeScreen({ navigation }: any) {
               timestamp: new Date().toISOString(),
             });
 
+            // Immediately update in-memory sub fields so downstream iterations or re-renders see the update
+            sub.meals_remaining = typeof sub.meals_remaining === 'number' ? Math.max(0, sub.meals_remaining - 1) : 0;
+            sub.last_auto_booked_date = todayStr;
             const updatedBookedSlots = { ...(sub.last_auto_booked_slots || {}), [slotItem.id]: todayStr };
+            sub.last_auto_booked_slots = updatedBookedSlots;
+
             await updateDoc(doc(firestore, 'subscriptions', sub.id), {
               meals_remaining: increment(-1),
               last_auto_booked_date: todayStr,
@@ -677,6 +718,8 @@ export default function HomeScreen({ navigation }: any) {
         }
       } catch (err) {
         console.log('Notice auto-booking daily subscription meal:', err);
+      } finally {
+        isAutoBookingRunningRef.current = false;
       }
     };
 
@@ -790,7 +833,7 @@ export default function HomeScreen({ navigation }: any) {
         {/* Delivery Address Capsule */}
         <TouchableOpacity
           style={[styles.addressBar, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}
-          onPress={() => navigation.navigate('Profile')}
+          onPress={() => navigation.navigate('Profile', { openAddModal: !user?.addresses || user.addresses.length === 0 })}
           activeOpacity={0.7}
         >
           <Text style={styles.addressPin}>📍</Text>
@@ -1065,7 +1108,7 @@ export default function HomeScreen({ navigation }: any) {
         {/* Missing Delivery Location Notice for Active Subscribers */}
         {primaryActiveSub && (!user?.addresses || user.addresses.length === 0 || !user.addresses[0]?.line1) && (
           <TouchableOpacity
-            onPress={() => navigation.navigate('Profile')}
+            onPress={() => navigation.navigate('Profile', { openAddModal: true })}
             style={{
               marginHorizontal: 16,
               marginBottom: 12,

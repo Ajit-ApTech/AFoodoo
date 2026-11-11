@@ -21,7 +21,7 @@ import { DeliveryAddress } from '../types';
 import { BottomNavBar, BottomTabType } from '../components/BottomNavBar';
 import { haversineDistance } from '../utils/geo';
 
-export default function ProfileScreen({ navigation }: any) {
+export default function ProfileScreen({ navigation, route }: any) {
   const user = useAppStore(state => state.user);
   const setUser = useAppStore(state => state.setUser);
   const notificationSettings = useAppStore(state => state.notificationSettings);
@@ -48,14 +48,22 @@ export default function ProfileScreen({ navigation }: any) {
   const [label, setLabel] = useState<'Home' | 'Work' | 'Other'>('Home');
   const [receiverName, setReceiverName] = useState(user?.name || '');
   const [receiverPhone, setReceiverPhone] = useState(user?.phone || '');
+  const [flatNo, setFlatNo] = useState('');
   const [line1, setLine1] = useState('');
   const [landmark, setLandmark] = useState('');
   const [city, setCity] = useState('');
   const [zip, setZip] = useState('');
   const [detectedLat, setDetectedLat] = useState<number | null>(null);
   const [detectedLng, setDetectedLng] = useState<number | null>(null);
+  const [detectedAreaName, setDetectedAreaName] = useState('');
   const [locating, setLocating] = useState(false);
   const [savingAddress, setSavingAddress] = useState(false);
+
+  useEffect(() => {
+    if (route?.params?.openAddModal) {
+      setShowAddModal(true);
+    }
+  }, [route?.params?.openAddModal]);
 
   // Real-Time Cloud Firestore listener on User Document
   useEffect(() => {
@@ -212,6 +220,7 @@ export default function ProfileScreen({ navigation }: any) {
 
           if (detectedStreet) {
             setLine1(detectedStreet);
+            setDetectedAreaName(detectedStreet);
           }
           if (detectedCity) {
             setCity(detectedCity);
@@ -222,14 +231,24 @@ export default function ProfileScreen({ navigation }: any) {
         }
       } catch (e) {}
 
-      Alert.alert('📍 Location Captured', 'Your GPS location was captured and address fields updated!');
+      Alert.alert(
+        '📍 Live GPS Pinned!',
+        'Your exact location has been captured. Please enter your Flat / House number and Building name below.'
+      );
     } catch (e: any) {
-      Alert.alert('GPS Error', e.message);
+      Alert.alert('GPS Error', e.message || 'Could not fetch current GPS location.');
     }
     setLocating(false);
   };
 
   const handleSaveAddress = async () => {
+    if (detectedLat == null || detectedLng == null || detectedLat === 0) {
+      Alert.alert(
+        'GPS Location Required 📍',
+        'Please tap "Detect My Live Location" first so we can capture the exact GPS pin for food delivery.'
+      );
+      return;
+    }
     if (!receiverName.trim()) {
       Alert.alert('Required', 'Please enter recipient name.');
       return;
@@ -238,35 +257,18 @@ export default function ProfileScreen({ navigation }: any) {
       Alert.alert('Required', 'Please enter contact number.');
       return;
     }
-    if (!line1.trim()) {
-      Alert.alert('Required', 'Please enter street address.');
-      return;
-    }
-    if (!city.trim()) {
-      Alert.alert('Required', 'Please enter city.');
+    if (!flatNo.trim()) {
+      Alert.alert('Required', 'Please enter your Flat / House No., Floor, or Building details.');
       return;
     }
 
     setSavingAddress(true);
 
+    const fullLine1 = [flatNo.trim(), line1.trim()].filter(Boolean).join(', ');
+
     let targetLat = detectedLat;
     let targetLng = detectedLng;
     let targetDist: number | undefined = undefined;
-
-    // If GPS coordinates were not auto-filled, attempt to geocode street + city + zip
-    if (targetLat == null || targetLng == null) {
-      try {
-        const Location = require('expo-location');
-        const query = [line1.trim(), city.trim(), zip.trim()].filter(Boolean).join(', ');
-        const results = await Location.geocodeAsync(query);
-        if (results && results.length > 0) {
-          targetLat = results[0].latitude;
-          targetLng = results[0].longitude;
-        }
-      } catch (geoErr) {
-        console.log('Notice geocoding in profile address:', geoErr);
-      }
-    }
 
     if (kitchenLat && kitchenLng && (kitchenLat !== 0 || kitchenLng !== 0) && targetLat != null && targetLng != null) {
       const dist = haversineDistance(kitchenLat, kitchenLng, targetLat, targetLng);
@@ -284,13 +286,13 @@ export default function ProfileScreen({ navigation }: any) {
       label,
       receiver_name: receiverName.trim(),
       receiver_phone: receiverPhone.trim(),
-      line1: line1.trim(),
+      line1: fullLine1,
       landmark: landmark.trim(),
       city: city.trim(),
       state: '',
       zip: zip.trim(),
-      latitude: targetLat ?? undefined,
-      longitude: targetLng ?? undefined,
+      latitude: targetLat,
+      longitude: targetLng,
       distance_km: targetDist,
     };
 
@@ -300,11 +302,11 @@ export default function ProfileScreen({ navigation }: any) {
     // Write to Cloud Firestore
     const userDocId = user?.id || `usr_${(user?.phone || '').replace(/\D/g, '')}`;
     try {
-      const { doc, updateDoc, setDoc } = require('firebase/firestore');
+      const { doc, setDoc } = require('firebase/firestore');
       const { firestore } = require('../firebaseConfig');
       await setDoc(
         doc(firestore, 'users', userDocId),
-        { addresses: updatedAddresses },
+        { addresses: updatedAddresses, address: fullLine1 },
         { merge: true }
       );
     } catch (e) {}
@@ -316,13 +318,15 @@ export default function ProfileScreen({ navigation }: any) {
 
     setSavingAddress(false);
     setShowAddModal(false);
+    setFlatNo('');
     setLine1('');
     setLandmark('');
     setCity('');
     setZip('');
     setDetectedLat(null);
     setDetectedLng(null);
-    Alert.alert('Address Saved 🎉', 'New delivery address has been saved to your account.');
+    setDetectedAreaName('');
+    Alert.alert('Address Saved 🎉', 'New delivery address has been saved with exact GPS coordinates!');
   };
 
   const handleDeleteAddress = (index: number) => {
@@ -644,121 +648,204 @@ export default function ProfileScreen({ navigation }: any) {
               </TouchableOpacity>
             </View>
 
-            <ScrollView style={{ maxHeight: 420 }}>
-              {/* GPS Auto-Fill Button */}
-              <TouchableOpacity
-                style={[styles.gpsButton, { backgroundColor: '#1565C0' }]}
-                onPress={handleDetectLocation}
-                disabled={locating}
-              >
-                {locating ? (
-                  <ActivityIndicator color="#FFF" size="small" />
-                ) : (
-                  <Text style={styles.gpsButtonText}>📍 Detect My Location (GPS Auto-Fill)</Text>
-                )}
-              </TouchableOpacity>
-
-              {detectedLat != null && (
-                <Text style={[styles.gpsHint, { color: theme.textMuted }]}>
-                  ✓ GPS captured: {detectedLat.toFixed(4)}, {detectedLng?.toFixed(4)}
-                </Text>
+            <ScrollView style={{ maxHeight: 420 }} keyboardShouldPersistTaps="handled">
+              {/* Step 1: GPS Detection */}
+              {detectedLat == null || detectedLng == null ? (
+                <View
+                  style={{
+                    backgroundColor: isDark ? 'rgba(249, 115, 22, 0.08)' : '#FFF7ED',
+                    borderRadius: 16,
+                    padding: 16,
+                    borderWidth: 1,
+                    borderColor: isDark ? 'rgba(249, 115, 22, 0.3)' : '#FDBA74',
+                    marginBottom: 16,
+                    alignItems: 'center',
+                  }}
+                >
+                  <Text style={{ fontSize: 32, marginBottom: 8 }}>📍</Text>
+                  <Text style={{ fontSize: 16, fontWeight: '800', color: theme.textPrimary, textAlign: 'center', marginBottom: 4 }}>
+                    Step 1: Detect Live Delivery Location
+                  </Text>
+                  <Text style={{ fontSize: 12, color: theme.textSecondary, textAlign: 'center', lineHeight: 18, marginBottom: 14 }}>
+                    AFoodoo uses your live GPS coordinates so our delivery riders can navigate directly to your exact doorstep.
+                  </Text>
+                  <TouchableOpacity
+                    style={[styles.gpsButton, { backgroundColor: theme.primary, width: '100%', paddingVertical: 14 }]}
+                    onPress={handleDetectLocation}
+                    disabled={locating}
+                  >
+                    {locating ? (
+                      <ActivityIndicator color="#FFF" size="small" />
+                    ) : (
+                      <Text style={[styles.gpsButtonText, { fontSize: 14, fontWeight: '800' }]}>
+                        📍 Detect My Current Location (GPS)
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                  <Text style={{ fontSize: 11, color: theme.textMuted, marginTop: 8 }}>
+                    ⚠️ Required to auto-pin your street and exact coordinates
+                  </Text>
+                </View>
+              ) : (
+                <View
+                  style={{
+                    backgroundColor: isDark ? 'rgba(16, 185, 129, 0.1)' : '#ECFDF5',
+                    borderRadius: 14,
+                    padding: 14,
+                    borderWidth: 1,
+                    borderColor: isDark ? 'rgba(16, 185, 129, 0.3)' : '#A7F3D0',
+                    marginBottom: 16,
+                  }}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                    <Text style={{ fontSize: 13, fontWeight: '800', color: isDark ? '#6EE7B7' : '#047857' }}>
+                      ✓ Live GPS Pin Captured
+                    </Text>
+                    <TouchableOpacity onPress={handleDetectLocation} disabled={locating}>
+                      <Text style={{ fontSize: 11, fontWeight: '700', color: theme.primary }}>
+                        {locating ? 'Updating...' : '↻ Re-detect GPS'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: theme.textPrimary }}>
+                    {line1 || 'Current Location'}
+                  </Text>
+                  <Text style={{ fontSize: 11, color: theme.textSecondary, marginTop: 2 }}>
+                    {city}{zip ? ` - ${zip}` : ''} • ({detectedLat.toFixed(4)}, {detectedLng.toFixed(4)})
+                  </Text>
+                </View>
               )}
 
-              {/* Address Tag Selection */}
-              <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>Address Tag</Text>
-              <View style={styles.tagRow}>
-                {(['Home', 'Work', 'Other'] as const).map(tag => (
-                  <TouchableOpacity
-                    key={tag}
-                    style={[
-                      styles.tagChip,
-                      {
-                        backgroundColor: label === tag ? theme.primary : theme.inputBg,
-                        borderColor: label === tag ? theme.primary : theme.inputBorder,
-                      },
-                    ]}
-                    onPress={() => setLabel(tag)}
-                  >
-                    <Text style={{ color: label === tag ? '#FFF' : theme.textPrimary, fontWeight: '700', fontSize: 13 }}>
-                      {tag}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
+              {/* Step 2: Details unlocked after GPS */}
+              {detectedLat != null && detectedLng != null ? (
+                <View>
+                  <Text style={{ fontSize: 14, fontWeight: '800', color: theme.textPrimary, marginBottom: 12 }}>
+                    Step 2: Building & Recipient Details
+                  </Text>
 
-              <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>Recipient Name *</Text>
-              <TextInput
-                style={inputStyle}
-                value={receiverName}
-                onChangeText={setReceiverName}
-                placeholder="Full Name"
-                placeholderTextColor={theme.textMuted}
-              />
+                  {/* Address Tag Selection */}
+                  <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>Address Tag</Text>
+                  <View style={styles.tagRow}>
+                    {(['Home', 'Work', 'Other'] as const).map(tag => (
+                      <TouchableOpacity
+                        key={tag}
+                        style={[
+                          styles.tagChip,
+                          {
+                            backgroundColor: label === tag ? theme.primary : theme.inputBg,
+                            borderColor: label === tag ? theme.primary : theme.inputBorder,
+                          },
+                        ]}
+                        onPress={() => setLabel(tag)}
+                      >
+                        <Text style={{ color: label === tag ? '#FFF' : theme.textPrimary, fontWeight: '700', fontSize: 13 }}>
+                          {tag}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
 
-              <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>Contact Number *</Text>
-              <TextInput
-                style={inputStyle}
-                value={receiverPhone}
-                onChangeText={setReceiverPhone}
-                placeholder="10-digit mobile number"
-                placeholderTextColor={theme.textMuted}
-                keyboardType="phone-pad"
-              />
-
-              <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>Flat / House No., Building, Street *</Text>
-              <TextInput
-                style={inputStyle}
-                value={line1}
-                onChangeText={setLine1}
-                placeholder="House / Flat No., Building, Street"
-                placeholderTextColor={theme.textMuted}
-                multiline
-              />
-
-              <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>Landmark (Optional)</Text>
-              <TextInput
-                style={inputStyle}
-                value={landmark}
-                onChangeText={setLandmark}
-                placeholder="e.g. Near Market, School, Gate No. 2"
-                placeholderTextColor={theme.textMuted}
-              />
-
-              <View style={{ flexDirection: 'row' }}>
-                <View style={{ flex: 1, marginRight: 8 }}>
-                  <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>City *</Text>
+                  <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>
+                    Flat / House No., Floor, Building Name *
+                  </Text>
                   <TextInput
                     style={inputStyle}
-                    value={city}
-                    onChangeText={setCity}
-                    placeholder="City / Area"
+                    value={flatNo}
+                    onChangeText={setFlatNo}
+                    placeholder="e.g. Flat 302, 3rd Floor, Tower B"
                     placeholderTextColor={theme.textMuted}
                   />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>PIN Code</Text>
+
+                  <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>Landmark (Optional)</Text>
                   <TextInput
                     style={inputStyle}
-                    value={zip}
-                    onChangeText={setZip}
-                    placeholder="6-digit PIN code"
+                    value={landmark}
+                    onChangeText={setLandmark}
+                    placeholder="e.g. Near Gate 1, Opposite Park"
                     placeholderTextColor={theme.textMuted}
-                    keyboardType="numeric"
-                    maxLength={6}
                   />
+
+                  <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>Recipient Name *</Text>
+                  <TextInput
+                    style={inputStyle}
+                    value={receiverName}
+                    onChangeText={setReceiverName}
+                    placeholder="Full Name"
+                    placeholderTextColor={theme.textMuted}
+                  />
+
+                  <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>Contact Number *</Text>
+                  <TextInput
+                    style={inputStyle}
+                    value={receiverPhone}
+                    onChangeText={setReceiverPhone}
+                    placeholder="10-digit mobile number"
+                    placeholderTextColor={theme.textMuted}
+                    keyboardType="phone-pad"
+                  />
+
+                  <View style={{ flexDirection: 'row' }}>
+                    <View style={{ flex: 1, marginRight: 8 }}>
+                      <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>City</Text>
+                      <TextInput
+                        style={inputStyle}
+                        value={city}
+                        onChangeText={setCity}
+                        placeholder="City / Area"
+                        placeholderTextColor={theme.textMuted}
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>PIN Code</Text>
+                      <TextInput
+                        style={inputStyle}
+                        value={zip}
+                        onChangeText={setZip}
+                        placeholder="6-digit PIN code"
+                        placeholderTextColor={theme.textMuted}
+                        keyboardType="numeric"
+                        maxLength={6}
+                      />
+                    </View>
+                  </View>
                 </View>
-              </View>
+              ) : (
+                <View
+                  style={{
+                    padding: 16,
+                    borderRadius: 12,
+                    backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : '#F3F4F6',
+                    alignItems: 'center',
+                    marginTop: 8,
+                  }}
+                >
+                  <Text style={{ fontSize: 12, color: theme.textMuted, textAlign: 'center' }}>
+                    🔒 Please detect your GPS location above to specify flat and recipient details.
+                  </Text>
+                </View>
+              )}
             </ScrollView>
 
             <TouchableOpacity
-              style={[styles.saveModalButton, { backgroundColor: theme.primary }]}
+              style={[
+                styles.saveModalButton,
+                {
+                  backgroundColor:
+                    detectedLat != null && detectedLng != null ? theme.primary : theme.textMuted,
+                  opacity: detectedLat != null && detectedLng != null ? 1 : 0.6,
+                },
+              ]}
               onPress={handleSaveAddress}
-              disabled={savingAddress}
+              disabled={savingAddress || detectedLat == null || detectedLng == null}
             >
               {savingAddress ? (
                 <ActivityIndicator color="#FFF" />
               ) : (
-                <Text style={styles.saveModalButtonText}>Save Address to Profile</Text>
+                <Text style={styles.saveModalButtonText}>
+                  {detectedLat != null && detectedLng != null
+                    ? '✓ Save Delivery Address to Profile'
+                    : 'Detect Location Above First'}
+                </Text>
               )}
             </TouchableOpacity>
           </View>

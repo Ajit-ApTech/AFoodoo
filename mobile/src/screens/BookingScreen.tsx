@@ -614,29 +614,19 @@ export default function BookingScreen({ route, navigation }: any) {
     let targetLng = detectedLng;
     let targetDist = deliveryDistanceKm;
 
+    if (targetLat == null || targetLng == null || targetLat === 0) {
+      Alert.alert(
+        'GPS Location Required 📍',
+        'Please tap "Detect My Location" so our delivery rider can navigate directly to your doorstep with Google Maps.',
+        [
+          { text: 'Detect My Location', onPress: handleDetectLocation },
+          { text: 'Cancel', style: 'cancel' },
+        ]
+      );
+      return;
+    }
+
     if (kitchenLat != null && kitchenLng != null && (kitchenLat !== 0 || kitchenLng !== 0)) {
-      if (targetLat == null || targetLng == null) {
-        setSubmitting(true);
-        const resolved = await resolveAddressCoordinates(addressLine1, city, pincode);
-        setSubmitting(false);
-        if (resolved) {
-          targetLat = resolved.lat;
-          targetLng = resolved.lng;
-        }
-      }
-
-      if (targetLat == null || targetLng == null) {
-        Alert.alert(
-          'Location Verification Required 📍',
-          'We could not verify your exact map coordinates for delivery. Please tap "Detect My Location" or ensure your street and city are valid so we can verify you are within our delivery range.',
-          [
-            { text: 'Detect My Location', onPress: handleDetectLocation },
-            { text: 'Cancel', style: 'cancel' },
-          ]
-        );
-        return;
-      }
-
       const computedDist = Math.round(haversineDistance(kitchenLat, kitchenLng, targetLat, targetLng) * 10) / 10;
       targetDist = computedDist;
       setDeliveryDistanceKm(computedDist);
@@ -1076,78 +1066,155 @@ export default function BookingScreen({ route, navigation }: any) {
 
           {isEditingAddress ? (
             <View style={{ marginTop: 4 }}>
-              <TouchableOpacity
-                style={[styles.gpsButton, { backgroundColor: '#1565C0' }]}
-                onPress={handleDetectLocation}
-                disabled={locating}
-              >
-                {locating ? (
-                  <ActivityIndicator color="#FFF" size="small" />
-                ) : (
-                  <Text style={styles.gpsButtonText}>📍 Detect My Location (GPS Auto-Fill)</Text>
-                )}
-              </TouchableOpacity>
+              {/* Step 1: Detect Live GPS */}
+              {detectedLat == null || detectedLng == null ? (
+                <View
+                  style={{
+                    backgroundColor: isDark ? 'rgba(249, 115, 22, 0.08)' : '#FFF7ED',
+                    borderRadius: 14,
+                    padding: 14,
+                    borderWidth: 1,
+                    borderColor: isDark ? 'rgba(249, 115, 22, 0.3)' : '#FDBA74',
+                    marginBottom: 14,
+                    alignItems: 'center',
+                  }}
+                >
+                  <Text style={{ fontSize: 26, marginBottom: 4 }}>📍</Text>
+                  <Text style={{ fontSize: 14, fontWeight: '800', color: theme.textPrimary, textAlign: 'center', marginBottom: 2 }}>
+                    Step 1: Detect Live Delivery Location
+                  </Text>
+                  <Text style={{ fontSize: 11, color: theme.textSecondary, textAlign: 'center', lineHeight: 16, marginBottom: 10 }}>
+                    We require your live GPS coordinates so riders can navigate to your exact doorstep.
+                  </Text>
+                  <TouchableOpacity
+                    style={[styles.gpsButton, { backgroundColor: theme.primary, width: '100%', paddingVertical: 12 }]}
+                    onPress={handleDetectLocation}
+                    disabled={locating}
+                  >
+                    {locating ? (
+                      <ActivityIndicator color="#FFF" size="small" />
+                    ) : (
+                      <Text style={[styles.gpsButtonText, { fontSize: 13, fontWeight: '800' }]}>
+                        📍 Detect My Current Location (GPS)
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <View
+                  style={{
+                    backgroundColor: isDark ? 'rgba(16, 185, 129, 0.1)' : '#ECFDF5',
+                    borderRadius: 12,
+                    padding: 12,
+                    borderWidth: 1,
+                    borderColor: isDark ? 'rgba(16, 185, 129, 0.3)' : '#A7F3D0',
+                    marginBottom: 14,
+                  }}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 }}>
+                    <Text style={{ fontSize: 12, fontWeight: '800', color: isDark ? '#6EE7B7' : '#047857' }}>
+                      ✓ Live GPS Pin Captured
+                    </Text>
+                    <TouchableOpacity onPress={handleDetectLocation} disabled={locating}>
+                      <Text style={{ fontSize: 11, fontWeight: '700', color: theme.primary }}>
+                        {locating ? 'Updating...' : '↻ Re-detect GPS'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: theme.textPrimary }}>
+                    {addressLine1 || 'Current Location'}
+                  </Text>
+                  <Text style={{ fontSize: 11, color: theme.textSecondary, marginTop: 2 }}>
+                    {city}{pincode ? ` - ${pincode}` : ''} • ({detectedLat.toFixed(4)}, {detectedLng.toFixed(4)})
+                  </Text>
+                </View>
+              )}
 
-              <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Recipient Name</Text>
-              <TextInput
-                style={inputStyle}
-                value={receiverName}
-                onChangeText={setReceiverName}
-                placeholder="Full name"
-                placeholderTextColor={theme.textMuted}
-              />
+              {/* Step 2: Unlocked only after GPS is captured */}
+              {detectedLat != null && detectedLng != null ? (
+                <View>
+                  <Text style={{ fontSize: 12, fontWeight: '800', color: theme.textPrimary, marginBottom: 8 }}>
+                    Step 2: Building & Recipient Details
+                  </Text>
 
-              <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Phone Number</Text>
-              <TextInput
-                style={inputStyle}
-                value={receiverPhone}
-                onChangeText={setReceiverPhone}
-                placeholder="10-digit mobile number"
-                keyboardType="phone-pad"
-                placeholderTextColor={theme.textMuted}
-              />
-
-              <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Address Line</Text>
-              <TextInput
-                style={inputStyle}
-                value={addressLine1}
-                onChangeText={handleAddressLineChange}
-                placeholder="House / Flat / Street"
-                placeholderTextColor={theme.textMuted}
-              />
-
-              <View style={{ flexDirection: 'row', gap: 10 }}>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>City</Text>
+                  <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Recipient Name</Text>
                   <TextInput
                     style={inputStyle}
-                    value={city}
-                    onChangeText={handleCityChange}
-                    placeholder="City / Area"
+                    value={receiverName}
+                    onChangeText={setReceiverName}
+                    placeholder="Full name"
+                    placeholderTextColor={theme.textMuted}
+                  />
+
+                  <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Phone Number</Text>
+                  <TextInput
+                    style={inputStyle}
+                    value={receiverPhone}
+                    onChangeText={setReceiverPhone}
+                    placeholder="10-digit mobile number"
+                    keyboardType="phone-pad"
+                    placeholderTextColor={theme.textMuted}
+                  />
+
+                  <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>
+                    Flat / House No., Floor, Building Name
+                  </Text>
+                  <TextInput
+                    style={inputStyle}
+                    value={addressLine1}
+                    onChangeText={handleAddressLineChange}
+                    placeholder="e.g. Flat 302, 3rd Floor, Tower B"
+                    placeholderTextColor={theme.textMuted}
+                  />
+
+                  <View style={{ flexDirection: 'row', gap: 10 }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>City</Text>
+                      <TextInput
+                        style={inputStyle}
+                        value={city}
+                        onChangeText={handleCityChange}
+                        placeholder="City / Area"
+                        placeholderTextColor={theme.textMuted}
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Pincode</Text>
+                      <TextInput
+                        style={inputStyle}
+                        value={pincode}
+                        onChangeText={handlePincodeChange}
+                        placeholder="Pincode"
+                        keyboardType="numeric"
+                        placeholderTextColor={theme.textMuted}
+                      />
+                    </View>
+                  </View>
+
+                  <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Landmark (Optional)</Text>
+                  <TextInput
+                    style={inputStyle}
+                    value={landmark}
+                    onChangeText={setLandmark}
+                    placeholder="Landmark (e.g. Near Market, School)"
                     placeholderTextColor={theme.textMuted}
                   />
                 </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Pincode</Text>
-                  <TextInput
-                    style={inputStyle}
-                    value={pincode}
-                    onChangeText={handlePincodeChange}
-                    placeholder="Pincode"
-                    keyboardType="numeric"
-                    placeholderTextColor={theme.textMuted}
-                  />
+              ) : (
+                <View
+                  style={{
+                    padding: 12,
+                    borderRadius: 10,
+                    backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : '#F3F4F6',
+                    alignItems: 'center',
+                    marginBottom: 10,
+                  }}
+                >
+                  <Text style={{ fontSize: 11, color: theme.textMuted, textAlign: 'center' }}>
+                    🔒 Please detect your GPS location above to edit flat and recipient details.
+                  </Text>
                 </View>
-              </View>
-
-              <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Landmark</Text>
-              <TextInput
-                style={inputStyle}
-                value={landmark}
-                onChangeText={setLandmark}
-                placeholder="Landmark (e.g. Near Market, School)"
-                placeholderTextColor={theme.textMuted}
-              />
+              )}
             </View>
           ) : (
             <View>

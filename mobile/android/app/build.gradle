@@ -92,7 +92,7 @@ android {
         applicationId 'com.afoodoo.app'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion 36
-        versionCode 11
+        versionCode 14
         versionName "1.0.0"
     }
     signingConfigs {

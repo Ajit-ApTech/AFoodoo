@@ -98,6 +98,7 @@ export default function SubscriptionScreen({ navigation, route }: any) {
   const [isAddingNewAddress, setIsAddingNewAddress] = useState(false);
   const [addrReceiverName, setAddrReceiverName] = useState('');
   const [addrPhone, setAddrPhone] = useState('');
+  const [addrFlatNo, setAddrFlatNo] = useState('');
   const [addrLine1, setAddrLine1] = useState('');
   const [addrLandmark, setAddrLandmark] = useState('');
   const [addrCity, setAddrCity] = useState('');
@@ -412,6 +413,7 @@ export default function SubscriptionScreen({ navigation, route }: any) {
     }
     setAddrReceiverName(saved?.receiver_name || user?.name || '');
     setAddrPhone(saved?.receiver_phone || user?.phone || '');
+    setAddrFlatNo('');
     setAddrLine1(saved?.line1 || '');
     setAddrLandmark(saved?.landmark || '');
     setAddrCity(saved?.city || '');
@@ -452,7 +454,10 @@ export default function SubscriptionScreen({ navigation, route }: any) {
         }
       } catch (gErr) {}
 
-      Alert.alert('📍 Location Captured', 'Your GPS location was captured and address fields updated!');
+      Alert.alert(
+        '📍 Live GPS Pinned!',
+        'Your exact location has been captured. Please enter your Flat / House number and Building name below.'
+      );
     } catch (err: any) {
       Alert.alert('GPS Error', err?.message || 'Could not fetch current GPS location.');
     } finally {
@@ -471,6 +476,13 @@ export default function SubscriptionScreen({ navigation, route }: any) {
     }
 
     if (!finalAddr) {
+      if (!addrLat || !addrLng || addrLat === 0) {
+        Alert.alert(
+          'GPS Location Required 📍',
+          'Please tap "Detect My Current Location" first so our delivery riders can reach your exact doorstep.'
+        );
+        return;
+      }
       if (!addrReceiverName.trim()) {
         Alert.alert('Required Field', 'Please enter the delivery recipient name.');
         return;
@@ -479,27 +491,25 @@ export default function SubscriptionScreen({ navigation, route }: any) {
         Alert.alert('Required Field', 'Please enter a contact phone number.');
         return;
       }
-      if (!addrLine1.trim()) {
-        Alert.alert('Required Field', 'Please enter your street / flat / house address.');
+      if (!addrFlatNo.trim()) {
+        Alert.alert('Required Field', 'Please enter your Flat / House / Floor / Building details.');
         return;
       }
-      if (!addrCity.trim()) {
-        Alert.alert('Required Field', 'Please enter your city.');
-        return;
-      }
+
+      const fullLine1 = [addrFlatNo.trim(), addrLine1.trim()].filter(Boolean).join(', ');
 
       const newAddress = {
         id: `addr_${Date.now()}`,
         label: 'Home',
         receiver_name: addrReceiverName.trim(),
         receiver_phone: addrPhone.trim(),
-        line1: addrLine1.trim(),
+        line1: fullLine1,
         landmark: addrLandmark.trim(),
         city: addrCity.trim(),
         state: '',
         zip: addrZip.trim(),
-        latitude: addrLat ?? undefined,
-        longitude: addrLng ?? undefined,
+        latitude: addrLat,
+        longitude: addrLng,
       };
 
       const currentAddresses = user?.addresses || [];
@@ -512,7 +522,7 @@ export default function SubscriptionScreen({ navigation, route }: any) {
         const { firestore } = require('../firebaseConfig');
         await setDoc(
           doc(firestore, 'users', userDocId),
-          { addresses: updatedAddresses, address: addrLine1.trim() },
+          { addresses: updatedAddresses, address: fullLine1 },
           { merge: true }
         );
       } catch (e) {}
@@ -1989,106 +1999,97 @@ export default function SubscriptionScreen({ navigation, route }: any) {
                     </TouchableOpacity>
                   )}
 
-                  {/* Detect GPS Button */}
-                  <TouchableOpacity
-                    onPress={handleDetectAddressLocation}
-                    disabled={locatingAddr}
-                    style={{
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: 8,
-                      paddingVertical: 11,
-                      borderRadius: 12,
-                      backgroundColor: isDark ? 'rgba(249, 115, 22, 0.2)' : '#FFEDD5',
-                      borderWidth: 1,
-                      borderColor: theme.primary,
-                      marginBottom: 14,
-                    }}
-                  >
-                    {locatingAddr ? (
-                      <ActivityIndicator size="small" color={theme.primary} />
-                    ) : (
-                      <Text style={{ fontSize: 16 }}>📍</Text>
-                    )}
-                    <Text style={{ fontSize: 13, fontWeight: '700', color: theme.primary }}>
-                      {locatingAddr ? 'Capturing GPS Location...' : 'Use My Current GPS Location'}
-                    </Text>
-                  </TouchableOpacity>
+                  {/* Step 1: Detect GPS Location */}
+                  {addrLat == null || addrLng == null ? (
+                    <View
+                      style={{
+                        backgroundColor: isDark ? 'rgba(249, 115, 22, 0.08)' : '#FFF7ED',
+                        borderRadius: 16,
+                        padding: 16,
+                        borderWidth: 1,
+                        borderColor: isDark ? 'rgba(249, 115, 22, 0.3)' : '#FDBA74',
+                        marginBottom: 16,
+                        alignItems: 'center',
+                      }}
+                    >
+                      <Text style={{ fontSize: 30, marginBottom: 6 }}>📍</Text>
+                      <Text style={{ fontSize: 15, fontWeight: '800', color: theme.textPrimary, textAlign: 'center', marginBottom: 4 }}>
+                        Step 1: Detect Live Delivery Location
+                      </Text>
+                      <Text style={{ fontSize: 12, color: theme.textSecondary, textAlign: 'center', lineHeight: 18, marginBottom: 12 }}>
+                        AFoodoo delivers fresh daily tiffins. We require your live GPS coordinates so delivery riders can reach your exact doorstep.
+                      </Text>
+                      <TouchableOpacity
+                        onPress={handleDetectAddressLocation}
+                        disabled={locatingAddr}
+                        style={{
+                          width: '100%',
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: 8,
+                          paddingVertical: 13,
+                          borderRadius: 12,
+                          backgroundColor: theme.primary,
+                        }}
+                      >
+                        {locatingAddr ? (
+                          <ActivityIndicator size="small" color="#FFF" />
+                        ) : (
+                          <Text style={{ fontSize: 15 }}>📍</Text>
+                        )}
+                        <Text style={{ fontSize: 14, fontWeight: '800', color: '#FFF' }}>
+                          {locatingAddr ? 'Capturing GPS Location...' : 'Detect My Current Location (GPS)'}
+                        </Text>
+                      </TouchableOpacity>
+                      <Text style={{ fontSize: 11, color: theme.textMuted, marginTop: 8 }}>
+                        ⚠️ Required to auto-pin your street and coordinates
+                      </Text>
+                    </View>
+                  ) : (
+                    <View
+                      style={{
+                        backgroundColor: isDark ? 'rgba(16, 185, 129, 0.1)' : '#ECFDF5',
+                        borderRadius: 14,
+                        padding: 14,
+                        borderWidth: 1,
+                        borderColor: isDark ? 'rgba(16, 185, 129, 0.3)' : '#A7F3D0',
+                        marginBottom: 16,
+                      }}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                        <Text style={{ fontSize: 13, fontWeight: '800', color: isDark ? '#6EE7B7' : '#047857' }}>
+                          ✓ Live GPS Pin Captured
+                        </Text>
+                        <TouchableOpacity onPress={handleDetectAddressLocation} disabled={locatingAddr}>
+                          <Text style={{ fontSize: 11, fontWeight: '700', color: theme.primary }}>
+                            {locatingAddr ? 'Updating...' : '↻ Re-detect GPS'}
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                      <Text style={{ fontSize: 12, fontWeight: '700', color: theme.textPrimary }}>
+                        {addrLine1 || 'Current Location'}
+                      </Text>
+                      <Text style={{ fontSize: 11, color: theme.textSecondary, marginTop: 2 }}>
+                        {addrCity}{addrZip ? ` - ${addrZip}` : ''} • ({addrLat.toFixed(4)}, {addrLng.toFixed(4)})
+                      </Text>
+                    </View>
+                  )}
 
-                  <Text style={{ fontSize: 11, fontWeight: '700', color: theme.textSecondary, marginBottom: 4 }}>
-                    Recipient Name *
-                  </Text>
-                  <TextInput
-                    value={addrReceiverName}
-                    onChangeText={setAddrReceiverName}
-                    placeholder="e.g. Rahul Sharma"
-                    placeholderTextColor={theme.textMuted}
-                    style={{
-                      height: 44,
-                      borderRadius: 10,
-                      paddingHorizontal: 12,
-                      backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#F9FAFB',
-                      borderWidth: 1,
-                      borderColor: theme.surfaceBorder,
-                      color: theme.textPrimary,
-                      fontSize: 13,
-                      marginBottom: 10,
-                    }}
-                  />
+                  {/* Step 2: Unlocked only after GPS is captured */}
+                  {addrLat != null && addrLng != null ? (
+                    <View>
+                      <Text style={{ fontSize: 13, fontWeight: '800', color: theme.textPrimary, marginBottom: 10 }}>
+                        Step 2: Building & Recipient Details
+                      </Text>
 
-                  <Text style={{ fontSize: 11, fontWeight: '700', color: theme.textSecondary, marginBottom: 4 }}>
-                    Contact Phone Number *
-                  </Text>
-                  <TextInput
-                    value={addrPhone}
-                    onChangeText={setAddrPhone}
-                    placeholder="10-digit mobile number"
-                    placeholderTextColor={theme.textMuted}
-                    keyboardType="phone-pad"
-                    style={{
-                      height: 44,
-                      borderRadius: 10,
-                      paddingHorizontal: 12,
-                      backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#F9FAFB',
-                      borderWidth: 1,
-                      borderColor: theme.surfaceBorder,
-                      color: theme.textPrimary,
-                      fontSize: 13,
-                      marginBottom: 10,
-                    }}
-                  />
-
-                  <Text style={{ fontSize: 11, fontWeight: '700', color: theme.textSecondary, marginBottom: 4 }}>
-                    House / Flat / Street Address *
-                  </Text>
-                  <TextInput
-                    value={addrLine1}
-                    onChangeText={setAddrLine1}
-                    placeholder="e.g. Flat 301, Sunshine Heights, Sector 14"
-                    placeholderTextColor={theme.textMuted}
-                    style={{
-                      height: 44,
-                      borderRadius: 10,
-                      paddingHorizontal: 12,
-                      backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#F9FAFB',
-                      borderWidth: 1,
-                      borderColor: theme.surfaceBorder,
-                      color: theme.textPrimary,
-                      fontSize: 13,
-                      marginBottom: 10,
-                    }}
-                  />
-
-                  <View style={{ flexDirection: 'row', gap: 10 }}>
-                    <View style={{ flex: 1 }}>
                       <Text style={{ fontSize: 11, fontWeight: '700', color: theme.textSecondary, marginBottom: 4 }}>
-                        Landmark
+                        Recipient Name *
                       </Text>
                       <TextInput
-                        value={addrLandmark}
-                        onChangeText={setAddrLandmark}
-                        placeholder="Near Metro / Park"
+                        value={addrReceiverName}
+                        onChangeText={setAddrReceiverName}
+                        placeholder="e.g. Rahul Sharma"
                         placeholderTextColor={theme.textMuted}
                         style={{
                           height: 44,
@@ -2102,15 +2103,36 @@ export default function SubscriptionScreen({ navigation, route }: any) {
                           marginBottom: 10,
                         }}
                       />
-                    </View>
-                    <View style={{ flex: 1 }}>
+
                       <Text style={{ fontSize: 11, fontWeight: '700', color: theme.textSecondary, marginBottom: 4 }}>
-                        City *
+                        Contact Phone Number *
                       </Text>
                       <TextInput
-                        value={addrCity}
-                        onChangeText={setAddrCity}
-                        placeholder="e.g. Ranchi"
+                        value={addrPhone}
+                        onChangeText={setAddrPhone}
+                        placeholder="10-digit mobile number"
+                        placeholderTextColor={theme.textMuted}
+                        keyboardType="phone-pad"
+                        style={{
+                          height: 44,
+                          borderRadius: 10,
+                          paddingHorizontal: 12,
+                          backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#F9FAFB',
+                          borderWidth: 1,
+                          borderColor: theme.surfaceBorder,
+                          color: theme.textPrimary,
+                          fontSize: 13,
+                          marginBottom: 10,
+                        }}
+                      />
+
+                      <Text style={{ fontSize: 11, fontWeight: '700', color: theme.textSecondary, marginBottom: 4 }}>
+                        Flat / House No., Floor, Building Name *
+                      </Text>
+                      <TextInput
+                        value={addrFlatNo}
+                        onChangeText={setAddrFlatNo}
+                        placeholder="e.g. Flat 301, 3rd Floor, Tower B"
                         placeholderTextColor={theme.textMuted}
                         style={{
                           height: 44,
@@ -2124,30 +2146,91 @@ export default function SubscriptionScreen({ navigation, route }: any) {
                           marginBottom: 10,
                         }}
                       />
-                    </View>
-                  </View>
 
-                  <Text style={{ fontSize: 11, fontWeight: '700', color: theme.textSecondary, marginBottom: 4 }}>
-                    Pincode
-                  </Text>
-                  <TextInput
-                    value={addrZip}
-                    onChangeText={setAddrZip}
-                    placeholder="e.g. 834001"
-                    placeholderTextColor={theme.textMuted}
-                    keyboardType="number-pad"
-                    style={{
-                      height: 44,
-                      borderRadius: 10,
-                      paddingHorizontal: 12,
-                      backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#F9FAFB',
-                      borderWidth: 1,
-                      borderColor: theme.surfaceBorder,
-                      color: theme.textPrimary,
-                      fontSize: 13,
-                      marginBottom: 14,
-                    }}
-                  />
+                      <View style={{ flexDirection: 'row', gap: 10 }}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontSize: 11, fontWeight: '700', color: theme.textSecondary, marginBottom: 4 }}>
+                            Landmark (Optional)
+                          </Text>
+                          <TextInput
+                            value={addrLandmark}
+                            onChangeText={setAddrLandmark}
+                            placeholder="Near Metro / Park"
+                            placeholderTextColor={theme.textMuted}
+                            style={{
+                              height: 44,
+                              borderRadius: 10,
+                              paddingHorizontal: 12,
+                              backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#F9FAFB',
+                              borderWidth: 1,
+                              borderColor: theme.surfaceBorder,
+                              color: theme.textPrimary,
+                              fontSize: 13,
+                              marginBottom: 10,
+                            }}
+                          />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontSize: 11, fontWeight: '700', color: theme.textSecondary, marginBottom: 4 }}>
+                            City
+                          </Text>
+                          <TextInput
+                            value={addrCity}
+                            onChangeText={setAddrCity}
+                            placeholder="e.g. Ranchi"
+                            placeholderTextColor={theme.textMuted}
+                            style={{
+                              height: 44,
+                              borderRadius: 10,
+                              paddingHorizontal: 12,
+                              backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#F9FAFB',
+                              borderWidth: 1,
+                              borderColor: theme.surfaceBorder,
+                              color: theme.textPrimary,
+                              fontSize: 13,
+                              marginBottom: 10,
+                            }}
+                          />
+                        </View>
+                      </View>
+
+                      <Text style={{ fontSize: 11, fontWeight: '700', color: theme.textSecondary, marginBottom: 4 }}>
+                        Pincode
+                      </Text>
+                      <TextInput
+                        value={addrZip}
+                        onChangeText={setAddrZip}
+                        placeholder="e.g. 834001"
+                        placeholderTextColor={theme.textMuted}
+                        keyboardType="number-pad"
+                        style={{
+                          height: 44,
+                          borderRadius: 10,
+                          paddingHorizontal: 12,
+                          backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#F9FAFB',
+                          borderWidth: 1,
+                          borderColor: theme.surfaceBorder,
+                          color: theme.textPrimary,
+                          fontSize: 13,
+                          marginBottom: 14,
+                        }}
+                      />
+                    </View>
+                  ) : (
+                    <View
+                      style={{
+                        padding: 14,
+                        borderRadius: 12,
+                        backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : '#F3F4F6',
+                        alignItems: 'center',
+                        marginBottom: 12,
+                      }}
+                    >
+                      <Text style={{ fontSize: 12, color: theme.textMuted, textAlign: 'center' }}>
+                        🔒 Please detect your GPS location above to enter flat, floor, and recipient details.
+                      </Text>
+                    </View>
+                  )}
                 </View>
               )}
 
